@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StockSense AI — Indian Market Signal Agent</title>
+  <meta name="description" content="Nifty 50 Intraday AI Agent: Real-time news, 1H chart, 5-year history, 90%+ confidence Buy/Sell signals with Stop Loss, Target & Paper Trading." />
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+<!-- Network Auto-Reconnect Banner -->
+<div id="networkBanner" class="network-banner" style="display:none;"></div>
+
+<!-- ╔══════════════ HEADER ══════════════╗ -->
+<header class="header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-icon">📈</div>
+      <div>
+        <div class="brand-name">StockSense AI</div>
+        <div class="brand-sub">Nifty 50 Intraday Signal Agent</div>
+      </div>
+    </div>
+    <div class="header-center">
+      <div class="nifty-badge" id="niftyBadge">
+        <span class="pulse-dot"></span>
+        <span id="niftyText">Nifty 50: Loading...</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="confidence-slider-wrap">
+        <label>Min Confidence</label>
+        <input type="range" id="confidenceSlider" min="80" max="98" value="90" step="1" />
+        <span id="confidenceVal">90%</span>
+      </div>
+      <button class="btn-scan" id="scanBtn" onclick="startScan()">
+        <span class="btn-icon">🔍</span> Scan All Stocks
+      </button>
+      <div class="auto-scan-badge" id="autoScanBadge" style="display:none;align-items:center;gap:0.4rem;font-size:0.78rem;font-weight:600;color:#a78bfa;background:rgba(124,58,237,0.15);padding:0.4rem 0.75rem;border-radius:8px;border:1px solid rgba(124,58,237,0.3)">
+        <span style="width:8px;height:8px;background:#a78bfa;border-radius:50%;display:inline-block;box-shadow:0 0 8px #a78bfa"></span>
+        <span id="autoScanCountdownText">Auto-Refresh: 03:00</span>
+      </div>
+      <button class="btn-icon-only" onclick="toggleAlerts()" id="alertBtn" title="Toggle Alerts">🔔</button>
+    </div>
+  </div>
+</header>
+
+<!-- ╔══════════════ TABS ══════════════╗ -->
+<nav class="tabs">
+  <button class="tab active" onclick="switchTab('signals')" id="tab-signals">📡 Live Signals</button>
+  <button class="tab" onclick="switchTab('watchlist')" id="tab-watchlist">📋 Watchlist</button>
+  <button class="tab" onclick="switchTab('paper')" id="tab-paper">📝 Paper Trading</button>
+  <button class="tab" onclick="switchTab('journal')" id="tab-journal">📊 Journal</button>
+</nav>
+
+<!-- ╔══════════════ CONTENT ══════════════╗ -->
+<main class="content">
+
+  <!-- ──── TAB: SIGNALS ──── -->
+  <section id="page-signals" class="page active">
+    <div class="scan-status" id="scanStatus">
+      <div class="status-idle">💡 Click "Scan All Stocks" to start analyzing Nifty 50 with AI.</div>
+    </div>
+    <div class="signal-grid" id="signalGrid"></div>
+  </section>
+
+  <!-- ──── TAB: WATCHLIST ──── -->
+  <section id="page-watchlist" class="page">
+    <div class="watchlist-header">
+      <h2>Nifty 50 Watchlist</h2>
+      <div class="sector-filter" id="sectorFilter"></div>
+    </div>
+    <div class="watchlist-grid" id="watchlistGrid"></div>
+  </section>
+
+  <!-- ──── TAB: PAPER TRADING ──── -->
+  <section id="page-paper" class="page">
+    <div class="paper-header">
+      <div class="paper-balance-card">
+        <div class="balance-label">Paper Balance</div>
+        <div class="balance-amount" id="paperBalance">₹3,00,000.00</div>
+        <div class="balance-pnl" id="paperPnl">+₹0.00 (0.00%)</div>
+        <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap">
+          <button class="btn-reset" onclick="resetPaperAccount()">↺ Reset Account</button>
+          <button class="btn-manual-trade" onclick="openManualTradeModal()">✏️ Manual Entry</button>
+        </div>
+      </div>
+      <div class="paper-stats">
+        <div class="stat-card">
+          <div class="stat-label">Open Positions</div>
+          <div class="stat-val" id="openPositions">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total Return</div>
+          <div class="stat-val" id="totalReturn">0.00%</div>
+        </div>
+      </div>
+    </div>
+    <div class="positions-title">Open Positions</div>
+    <div class="positions-grid" id="positionsGrid">
+      <div class="empty-state">No open positions. Take a trade from the Signals tab!</div>
+    </div>
+    <div class="positions-title">Closed Trades</div>
+    <div class="trades-table-wrap">
+      <table class="trades-table" id="tradesTable">
+        <thead><tr><th>Stock</th><th>Action</th><th>Entry</th><th>Exit</th><th>Qty</th><th>P&L</th><th>Status</th><th>Date</th></tr></thead>
+        <tbody id="tradesBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ──── TAB: JOURNAL ──── -->
+  <section id="page-journal" class="page">
+    <div class="journal-grid">
+      <div class="journal-card">
+        <div class="journal-title">📅 Weekly Performance</div>
+        <div id="weeklyStats" class="journal-stats">Loading...</div>
+      </div>
+      <div class="journal-card">
+        <div class="journal-title">📆 Monthly Performance</div>
+        <div id="monthlyStats" class="journal-stats">Loading...</div>
+      </div>
+    </div>
+    <div class="positions-title">AI Signal History</div>
+    <div class="trades-table-wrap">
+      <table class="trades-table" id="signalsHistTable">
+        <thead><tr><th>Stock</th><th>Signal</th><th>Confidence</th><th>Entry</th><th>Target 1</th><th>Target 2</th><th>Stop Loss</th><th>Date</th></tr></thead>
+        <tbody id="signalsHistBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- ╔══════════════ MODAL: SIGNAL DETAIL ══════════════╗ -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+  <div class="modal" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div id="modalContent"></div>
+  </div>
+</div>
+
+<!-- ╔══════════════ TOAST NOTIFICATION ══════════════╗ -->
+<div class="toast" id="toast"></div>
+
+<!-- Audio alert -->
+<audio id="alertSound" preload="auto">
+  <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAA..." type="audio/wav" />
+</audio>
+
+<!-- ╔══════════════ MODAL: MANUAL TRADE ENTRY ══════════════╗ -->
+<div class="modal-overlay" id="manualTradeOverlay" onclick="closeManualTradeModal()">
+  <div class="modal manual-trade-modal" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeManualTradeModal()">✕</button>
+    <div class="manual-modal-title">✏️ Manual Trade Entry</div>
+    <div class="manual-modal-subtitle">Pick any Nifty 50 stock → Live price auto-fills → Set your SL & Targets</div>
+
+    <!-- STEP 1: Stock Picker -->
+    <div id="mt_step1">
+      <div class="mt-search-wrap">
+        <input id="mt_search" type="text" placeholder="🔍  Search stock… e.g. TCS, Reliance, HDFC"
+               oninput="filterStockPicker()" autocomplete="off" />
+      </div>
+      <div class="mt-stock-grid" id="mt_stock_grid">
+        <!-- Populated by JS -->
+      </div>
+    </div>
+
+    <!-- STEP 2: Trade Form (hidden until stock picked) -->
+    <div id="mt_step2" style="display:none">
+      <!-- Selected stock header -->
+      <div class="mt-selected-stock" id="mt_selected_header">
+        <button class="mt-back-btn" onclick="showMtStep1()">← Back</button>
+        <div class="mt-selected-info">
+          <div class="mt-sel-symbol" id="mt_sel_symbol">—</div>
+          <div class="mt-sel-name" id="mt_sel_name">—</div>
+        </div>
+        <div class="mt-live-price" id="mt_live_price_display">
+          <div class="mt-lp-val" id="mt_lp_val">—</div>
+          <div class="mt-lp-range" id="mt_lp_range">—</div>
+        </div>
+      </div>
+
+      <div class="manual-form">
+        <!-- Action toggle -->
+        <div class="manual-field">
+          <label>Action</label>
+          <div class="action-toggle">
+            <button id="mt_buy_btn" class="action-btn active-buy" onclick="setManualAction('BUY')">📈 BUY</button>
+            <button id="mt_sell_btn" class="action-btn" onclick="setManualAction('SELL')">📉 SELL</button>
+          </div>
+          <input type="hidden" id="mt_action" value="BUY" />
+        </div>
+
+        <div class="manual-form-row">
+          <div class="manual-field">
+            <label for="mt_price">Entry Price (₹)</label>
+            <input id="mt_price" type="number" step="0.05" min="1" placeholder="Live price" oninput="autoCalcManualQty()" />
+          </div>
+          <div class="manual-field">
+            <label for="mt_sl">Stop Loss (₹) <span class="hint-tag" id="mt_sl_hint_tag"></span></label>
+            <input id="mt_sl" type="number" step="0.05" min="1" placeholder="Auto-suggested" oninput="autoCalcManualQty()" />
+          </div>
+        </div>
+
+        <div class="manual-form-row">
+          <div class="manual-field">
+            <label for="mt_t1">Target 1 (₹) <span class="hint-tag" id="mt_t1_hint_tag"></span></label>
+            <input id="mt_t1" type="number" step="0.05" min="1" placeholder="Suggested" oninput="autoCalcManualQty()" />
+          </div>
+          <div class="manual-field">
+            <label for="mt_t2">Target 2 (₹) <span class="hint-tag" id="mt_t2_hint_tag"></span></label>
+            <input id="mt_t2" type="number" step="0.05" min="1" placeholder="Suggested" />
+          </div>
+        </div>
+
+        <div class="manual-form-row">
+          <div class="manual-field">
+            <label for="mt_qty">Quantity <small style="color:#7a8ba8;font-weight:400">(shares)</small></label>
+            <input id="mt_qty" type="number" min="1" step="1" placeholder="Auto from 2% risk" />
+            <small id="mt_qty_hint" style="color:#00ff88"></small>
+          </div>
+          <div class="manual-field manual-rr" id="mt_rr_display" style="display:none">
+            <div class="rr-label">Risk : Reward</div>
+            <div class="rr-val" id="mt_rr_val">—</div>
+          </div>
+        </div>
+
+        <div id="mt_error" class="mt-error" style="display:none"></div>
+
+        <button class="btn-submit-trade" id="mt_submit_btn" onclick="submitManualTrade()">
+          🚀 Place Paper Trade
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ╔══════════════ MODAL: CLOSE POSITION ══════════════╗ -->
+<div class="modal-overlay" id="closePosOverlay" onclick="closeClosePosModal()">
+  <div class="modal close-pos-modal" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeClosePosModal()">✕</button>
+    <div class="manual-modal-title">❌ Close Position</div>
+    <div class="manual-modal-subtitle" id="cp_subtitle">Closing position</div>
+
+    <!-- Live price display -->
+    <div class="mt-selected-stock" style="margin-top:1rem">
+      <div class="mt-selected-info">
+        <div class="mt-sel-symbol" id="cp_symbol">—</div>
+        <div class="mt-sel-name" id="cp_details">—</div>
+      </div>
+      <div class="mt-live-price">
+        <div class="mt-lp-val" id="cp_cmp">—</div>
+        <div class="mt-lp-range" id="cp_pnl_preview" style="color:#ffd700">P&amp;L preview loading…</div>
+      </div>
+    </div>
+
+    <div class="manual-form" style="margin-top:1rem">
+      <div class="manual-field">
+        <label for="cp_price">Exit Price (₹)</label>
+        <input id="cp_price" type="number" step="0.05" min="1" placeholder="CMP auto-filled" oninput="updateClosePnlPreview()" />
+      </div>
+      <div class="manual-field">
+        <label>Exit Reason</label>
+        <div class="action-toggle" style="gap:0.4rem">
+          <button id="cp_r_manual" class="action-btn active-buy" style="font-size:0.75rem" onclick="setCpReason('MANUAL')">Manual</button>
+          <button id="cp_r_t1"     class="action-btn" style="font-size:0.75rem" onclick="setCpReason('T1_HIT')">T1 Hit</button>
+          <button id="cp_r_t2"     class="action-btn" style="font-size:0.75rem" onclick="setCpReason('T2_HIT')">T2 Hit</button>
+          <button id="cp_r_sl"     class="action-btn" style="font-size:0.75rem" onclick="setCpReason('SL_HIT')">SL Hit</button>
+        </div>
+        <input type="hidden" id="cp_reason" value="MANUAL" />
+      </div>
+      <div id="cp_error" class="mt-error" style="display:none"></div>
+      <button class="btn-submit-trade" id="cp_submit_btn" onclick="submitClosePosition()"
+              style="background:linear-gradient(135deg,#ff4d6d,#c0392b)">
+        ❌ Confirm Close
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ╔══════════════ MODAL: QUICK ORDER EXECUTION (CUSTOM QUANTITY) ══════════════╗ -->
+<div class="modal-overlay" id="quickOrderOverlay" onclick="closeQuickOrderModal()">
+  <div class="modal manual-trade-modal" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeQuickOrderModal()">✕</button>
+    <div class="manual-modal-title" id="qo_title">🛒 Place Paper Order</div>
+    <div class="manual-modal-subtitle" id="qo_subtitle">Custom Quantity &amp; Trade Execution</div>
+
+    <div class="mt-selected-stock" style="margin-top:1rem">
+      <div class="mt-selected-info">
+        <div class="mt-sel-symbol" id="qo_symbol">RELIANCE</div>
+        <div class="mt-sel-name" id="qo_name">Reliance Industries</div>
+      </div>
+      <div class="mt-live-price">
+        <div class="mt-lp-val" id="qo_price_display">₹1,299.40</div>
+        <div class="mt-lp-range" id="qo_trade_type" style="color:#00ff88;font-weight:700">BUY ORDER</div>
+      </div>
+    </div>
+
+    <div class="manual-form" style="margin-top:1.2rem">
+      <!-- Quantity Input with Presets -->
+      <div class="manual-field">
+        <label for="qo_qty">Quantity <small style="color:#7a8ba8;font-weight:400">(Enter number of shares)</small></label>
+        <input id="qo_qty" type="number" min="1" step="1" value="10" oninput="updateQoOrderValue()" style="font-size:1.15rem;font-weight:700;color:#00ff88" />
+        <div style="display:flex;gap:0.4rem;margin-top:0.5rem;flex-wrap:wrap">
+          <button type="button" class="sector-btn" onclick="setQoQty(5)">5 Qty</button>
+          <button type="button" class="sector-btn" onclick="setQoQty(10)">10 Qty</button>
+          <button type="button" class="sector-btn" onclick="setQoQty(25)">25 Qty</button>
+          <button type="button" class="sector-btn" onclick="setQoQty(50)">50 Qty</button>
+          <button type="button" class="sector-btn" onclick="setQoQty(100)">100 Qty</button>
+          <button type="button" class="sector-btn" onclick="setQoQty('auto')">⚡ Auto Risk Qty</button>
+        </div>
+        <small id="qo_value_hint" style="color:#ffd700;display:block;margin-top:0.4rem;font-weight:600"></small>
+      </div>
+
+      <div class="manual-form-row" style="margin-top:0.8rem">
+        <div class="manual-field">
+          <label for="qo_sl">Stop Loss (₹)</label>
+          <input id="qo_sl" type="number" step="0.05" min="1" />
+        </div>
+        <div class="manual-field">
+          <label for="qo_t1">Target 1 (₹)</label>
+          <input id="qo_t1" type="number" step="0.05" min="1" />
+        </div>
+      </div>
+
+      <input type="hidden" id="qo_entry_price" value="0" />
+      <input type="hidden" id="qo_t2" value="0" />
+      <input type="hidden" id="qo_action" value="BUY" />
+      <input type="hidden" id="qo_sig_id" value="" />
+
+      <div id="qo_error" class="mt-error" style="display:none"></div>
+
+      <button class="btn-submit-trade" id="qo_submit_btn" onclick="submitQuickOrder()" style="margin-top:1.2rem">
+        🚀 Confirm Paper Trade
+      </button>
+    </div>
+  </div>
+</div>
+
+
+<div id="toast" class="toast"></div>
+
+<script src="/static/app.js?v=14"></script>
+</body>
+</html>

@@ -1,0 +1,202 @@
+"""
+MySQL Database Engine with SQLite Fallback
+Tables: ai_signals, user_trades, daily_performance, paper_trades
+"""
+
+import os
+import logging
+from datetime import date, datetime
+from typing import Optional
+from sqlalchemy import (
+    create_engine, Column, Integer, Float, String, DateTime,
+    Date, Text, Boolean, func
+)
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from dotenv import load_dotenv
+
+load_dotenv()
+logger = logging.getLogger(__name__)
+
+Base = declarative_base()
+
+# ─────────────────────────── MODELS ────────────────────────────
+
+class AISignal(Base):
+    __tablename__ = "ai_signals"
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    symbol          = Column(String(30), nullable=False)
+    company_name    = Column(String(100))
+    sector          = Column(String(50))
+    signal          = Column(String(20))        # BUY / SELL / AVOID
+    confidence      = Column(Float)             # e.g. 92.5
+    entry_low       = Column(Float)
+    entry_high      = Column(Float)
+    target1         = Column(Float)
+    target2         = Column(Float)
+    stop_loss       = Column(Float)
+    rr_ratio        = Column(Float)
+    sl_hit_prob     = Column(Float)
+    news_headline   = Column(Text)
+    news_summary    = Column(Text)
+    historical_note = Column(Text)
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    trade_date      = Column(Date, default=date.today)
+
+
+class PaperTrade(Base):
+    __tablename__ = "paper_trades"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id      = Column(Integer, nullable=True)
+    symbol         = Column(String(30), nullable=False)
+    company_name   = Column(String(100))
+    action         = Column(String(10))         # BUY / SELL
+    entry_price    = Column(Float)
+    quantity       = Column(Integer)
+    exit_price     = Column(Float, nullable=True)
+    stop_loss      = Column(Float)
+    target1        = Column(Float)
+    target2        = Column(Float)
+    status         = Column(String(20), default="OPEN")  # OPEN / CLOSED / SL_HIT / T1_HIT / T2_HIT
+    pnl            = Column(Float, default=0.0)
+    pnl_percent    = Column(Float, default=0.0)
+    opened_at      = Column(DateTime, default=datetime.utcnow)
+    closed_at      = Column(DateTime, nullable=True)
+    trade_date     = Column(Date, default=date.today)
+
+
+class DailyPerformance(Base):
+    __tablename__ = "daily_performance"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date     = Column(Date, unique=True, nullable=False)
+    total_signals  = Column(Integer, default=0)
+    total_trades   = Column(Integer, default=0)
+    wins           = Column(Integer, default=0)
+    losses         = Column(Integer, default=0)
+    breakeven      = Column(Integer, default=0)
+    net_pnl        = Column(Float, default=0.0)
+    win_rate       = Column(Float, default=0.0)
+    paper_balance  = Column(Float, default=0.0)
+    created_at     = Column(DateTime, default=datetime.utcnow)
+
+
+# ─────────────────────────── ENGINE SETUP ────────────────────────────
+
+def _build_engine():
+    """Try MySQL first, fallback to SQLite."""
+    mysql_user = os.getenv("MYSQL_USER", "root")
+    mysql_pass = os.getenv("MYSQL_PASSWORD", "")
+    mysql_host = os.getenv("MYSQL_HOST", "localhost")
+    mysql_port = os.getenv("MYSQL_PORT", "3306")
+    mysql_db   = os.getenv("MYSQL_DB", "stock_agent")
+
+    if mysql_pass:
+        try:
+            url = f"mysql+pymysql://{mysql_user}:{mysql_pass}@{mysql_host}:{mysql_port}/{mysql_db}"
+            engine = create_engine(url, pool_pre_ping=True, pool_recycle=3600)
+            with engine.connect():
+                pass
+            logger.info("✅ Connected to MySQL database: %s", mysql_db)
+            return engine
+        except Exception as e:
+            logger.warning("⚠️  MySQL connection failed (%s). Falling back to SQLite.", e)
+
+    sqlite_path = os.path.join(os.path.dirname(__file__), "..", "data", "stock_agent.db")
+    os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
+    engine = create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
+    logger.info("📦 Using SQLite fallback: %s", sqlite_path)
+    return engine
+
+
+engine = _build_engine()
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
+    logger.info("✅ Database tables initialized.")
+
+
+def get_db() -> Session:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# ─────────────────────────── HELPERS ────────────────────────────
+
+def save_signal(db: Session, signal_data: dict) -> AISignal:
+    obj = AISignal(**signal_data)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def save_paper_trade(db: Session, trade_data: dict) -> PaperTrade:
+    obj = PaperTrade(**trade_data)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_open_paper_trades(db: Session):
+    return db.query(PaperTrade).filter(PaperTrade.status == "OPEN").all()
+
+
+def get_weekly_summary(db: Session):
+    from sqlalchemy import text
+    result = db.execute(text("""
+        SELECT
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+            COALESCE(SUM(pnl), 0) as net_pnl,
+            COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
+        FROM paper_trades
+        WHERE trade_date >= date('now', '-7 days')
+    """)).fetchone()
+    return dict(result._mapping) if result else {}
+
+
+def get_monthly_summary(db: Session):
+    from sqlalchemy import text
+    result = db.execute(text("""
+        SELECT
+            COUNT(*) as total_trades,
+            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
+            COALESCE(SUM(pnl), 0) as net_pnl,
+            COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
+        FROM paper_trades
+        WHERE trade_date >= date('now', '-30 days')
+    """)).fetchone()
+    return dict(result._mapping) if result else {}
+
+
+def save_daily_performance(db: Session, today: date, paper_balance: float):
+    trades = db.query(PaperTrade).filter(PaperTrade.trade_date == today).all()
+    wins      = sum(1 for t in trades if t.pnl > 0)
+    losses    = sum(1 for t in trades if t.pnl < 0)
+    breakeven = sum(1 for t in trades if t.pnl == 0)
+    net_pnl   = sum(t.pnl for t in trades)
+    total     = len(trades)
+    win_rate  = (wins / total * 100) if total > 0 else 0.0
+
+    existing = db.query(DailyPerformance).filter(DailyPerformance.trade_date == today).first()
+    if existing:
+        existing.total_trades = total
+        existing.wins         = wins
+        existing.losses       = losses
+        existing.breakeven    = breakeven
+        existing.net_pnl      = net_pnl
+        existing.win_rate     = win_rate
+        existing.paper_balance= paper_balance
+    else:
+        db.add(DailyPerformance(
+            trade_date=today, total_trades=total, wins=wins, losses=losses,
+            breakeven=breakeven, net_pnl=net_pnl, win_rate=win_rate, paper_balance=paper_balance
+        ))
+    db.commit()

@@ -1,0 +1,32 @@
+# Environment Variables & API Keys (DO NOT PUSH)
+.env
+.env.local
+*.env
+
+# Python Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python Cache & Compiled Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Database & SQLite files
+data/*.db
+*.sqlite3
+*.db
+
+# IDE & Editor Settings
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/
