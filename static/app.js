@@ -1790,7 +1790,12 @@ function applySession(user, trial) {
   // Set email in dropdown
   const menuEmail = document.getElementById('menuEmail');
   if (menuEmail) menuEmail.textContent = user.email;
+
+  // Show header sign out button
+  const signOutBtn = document.getElementById('headerSignOutBtn');
+  if (signOutBtn) signOutBtn.style.display = 'inline-flex';
 }
+
 
 function toggleUserMenu() {
   const menu = document.getElementById('userMenu');
@@ -1812,9 +1817,15 @@ function handleLogout() {
   localStorage.removeItem(SS_TRIAL_KEY);
   const badge = document.getElementById('userSessionBadge');
   if (badge) badge.style.display = 'none';
+  
+  // Hide header sign out button
+  const signOutBtn = document.getElementById('headerSignOutBtn');
+  if (signOutBtn) signOutBtn.style.display = 'none';
+
   showLoginModal();
   showToast('Signed out successfully.', 'info');
 }
+
 
 // Initialize auth on page load
 window.addEventListener('DOMContentLoaded', () => {
