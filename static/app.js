@@ -1638,11 +1638,16 @@ function trackBrokerClick(brokerName) {
 //  GOOGLE LOGIN & USER SESSION
 // ══════════════════════════════════════════════════
 
-const SS_USER_KEY  = 'ss_user';
-const SS_TRIAL_KEY = 'ss_trial';
+let GOOGLE_CLIENT_ID = "";
 
 /** Called on every page load — check if user already logged in */
-function initAuthSession() {
+async function initAuthSession() {
+  try {
+    const res = await fetch('/api/auth/config');
+    const data = await res.json();
+    GOOGLE_CLIENT_ID = data.google_client_id || "";
+  } catch(e) { console.warn("Failed to load auth config", e); }
+
   const stored = localStorage.getItem(SS_USER_KEY);
   if (stored) {
     try {
@@ -1675,12 +1680,10 @@ function hideLoginModal() {
  * For now we simulate with a clean custom popup until Google Client ID is set.
  */
 function startGoogleLogin() {
-  const googleClientId = window.GOOGLE_CLIENT_ID || '';
-
-  if (googleClientId && window.google && google.accounts) {
+  if (GOOGLE_CLIENT_ID && window.google && google.accounts) {
     // Real Google One-Tap
     google.accounts.id.initialize({
-      client_id: googleClientId,
+      client_id: GOOGLE_CLIENT_ID,
       callback: handleGoogleCredential,
     });
     google.accounts.id.prompt();
@@ -1727,14 +1730,26 @@ async function _doBackendLogin(profile) {
 
 /** Demo simulate for testing (no real Google OAuth yet) */
 function _simulateDemoLogin() {
+  const email = prompt("Enter your Email to start 30-Day Free Trial:", "");
+  if (!email) return;
+  
+  // Basic email validation
+  if (!email.includes("@")) {
+    alert("Please enter a valid email address.");
+    return;
+  }
+  
+  const name = prompt("Enter your Name:", "") || email.split('@')[0];
+  
   const mockUser = {
-    google_id: 'demo_' + Date.now(),
-    email: 'demo@stockssense.ai',
-    name: 'Demo User',
+    google_id: 'demo_' + email.replace(/[^a-zA-Z0-9]/g, ''),
+    email: email,
+    name: name,
     picture: '',
   };
   _doBackendLogin(mockUser);
 }
+
 
 function applySession(user, trial) {
   // Show user badge

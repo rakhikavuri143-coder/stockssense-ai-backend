@@ -937,7 +937,14 @@ async def get_saas_summary(db: Session = Depends(get_db)):
 
 # ─────────────────────────── ADMIN PAGE ROUTE ────────────────────────────
 
+@app.get("/api/auth/config")
+async def get_auth_config():
+    """Return public auth config (Google Client ID)."""
+    return {"google_client_id": os.getenv("GOOGLE_CLIENT_ID", "")}
+
+
 @app.get("/admin", include_in_schema=False)
+
 async def admin_page():
     """Serve the Owner Admin Dashboard page."""
     admin_path = os.path.join(static_dir, "admin.html")
