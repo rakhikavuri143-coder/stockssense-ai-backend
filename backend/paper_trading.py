@@ -3,6 +3,12 @@
 Tracks virtual trades, portfolio balance, P&L, Target/SL exits dynamically with DB persistence.
 """
 
+# ═══════════════════════════════════════════════════════════
+# TARGET 1 PROFIT THRESHOLD (₹ Flat Profit, NOT Price-Based)
+# When ANY trade reaches this profit, T1 is triggered.
+# ═══════════════════════════════════════════════════════════
+T1_PROFIT_THRESHOLD = 150.0  # ₹150 flat profit per trade (3 trades × ₹150 = ₹450/day)
+
 import os
 import logging
 from datetime import datetime, date
@@ -116,6 +122,28 @@ def place_paper_order(
 
     # 1. Daily Drawdown Circuit Breaker (-1.5% Max Daily Capital Loss Protection)
     today_trades = db.query(PaperTrade).filter(PaperTrade.trade_date == date.today()).all()
+
+    # 1.1 Category-wise Overtrading Guard (Max 3 Nifty 50 + Max 3 Budget Trades)
+    from backend.indian_stocks import BUDGET_LOW_PRICED_STOCKS
+    budget_symbols = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
+
+    budget_today = [t for t in today_trades if t.symbol in budget_symbols]
+    nifty_today  = [t for t in today_trades if t.symbol not in budget_symbols]
+
+    is_budget_trade = symbol in budget_symbols
+
+    if is_budget_trade and len(budget_today) >= 3:
+        return {
+            "success": False,
+            "message": f"🛡️ Overtrading Guard Active: Reached daily limit of 3 Budget Stock trades (Today: {len(budget_today)} budget trades). Paused to enforce discipline."
+        }
+
+    if not is_budget_trade and len(nifty_today) >= 3:
+        return {
+            "success": False,
+            "message": f"🛡️ Overtrading Guard Active: Reached daily limit of 3 Nifty 50 trades (Today: {len(nifty_today)} nifty trades). Paused to enforce discipline."
+        }
+
     today_closed_pnl = sum(t.pnl for t in today_trades if t.pnl is not None and t.status != "OPEN")
     max_daily_loss = -(_paper_capital * 0.015)  # -₹4,500 max daily loss
     if today_closed_pnl <= max_daily_loss:
@@ -124,14 +152,21 @@ def place_paper_order(
             "message": f"🛡️ Daily Drawdown Guard Active: Today's P&L (₹{today_closed_pnl:,.2f}) hit max limit (-₹{abs(max_daily_loss):,.2f}). Trading paused to preserve capital."
         }
 
-    # 2. Risk:Reward Ratio Guard (Minimum 1:1.5)
-    sl_dist = abs(entry_price - stop_loss)
-    reward_dist = abs(target1 - entry_price)
-    if sl_dist > 0 and (reward_dist / sl_dist) < 1.45:
-        return {
-            "success": False,
-            "message": f"⛔ Rejected: Risk-to-Reward ratio (1:{reward_dist/sl_dist:.1f}) is below minimum 1:1.5 threshold."
-        }
+    # 1.5. Target & SL Direction Enforcer
+    if action == "SELL":
+        if target1 >= entry_price or target2 >= entry_price:
+            target1 = round(entry_price - (abs(entry_price - stop_loss) * 1.8), 2)
+            target2 = round(entry_price - (abs(entry_price - stop_loss) * 3.0), 2)
+            logger.info("🔧 Auto-corrected SELL targets for %s: T1=₹%.2f, T2=₹%.2f", symbol, target1, target2)
+        if stop_loss <= entry_price:
+            stop_loss = round(entry_price * 1.01, 2)
+    elif action == "BUY":
+        if target1 <= entry_price or target2 <= entry_price:
+            target1 = round(entry_price + (abs(entry_price - stop_loss) * 1.8), 2)
+            target2 = round(entry_price + (abs(entry_price - stop_loss) * 3.0), 2)
+            logger.info("🔧 Auto-corrected BUY targets for %s: T1=₹%.2f, T2=₹%.2f", symbol, target1, target2)
+        if stop_loss >= entry_price:
+            stop_loss = round(entry_price * 0.99, 2)
 
     trade_value = round(entry_price * quantity, 2)
 
@@ -257,16 +292,22 @@ def close_paper_position(
 
 
 _peak_prices: dict[int, float] = {}
+_peak_pnl:    dict[int, float] = {}   # Tracks peak P&L (₹) per trade for Nifty trailing stop
 
 def check_auto_exits(db: Session, live_prices: dict[str, float]):
     """
     Auto-check open positions against live prices.
     Triggers Target 1, Target 2, Stop Loss exits, EOD 3:25 PM Auto-Squareoff, or Trailing Peak Profit Lock automatically.
     """
-    global _peak_prices
+    global _peak_prices, _peak_pnl
     _, open_positions = sync_state(db)
     results = []
-    current_time_str = datetime.now().strftime("%H:%M")
+    from datetime import timezone, timedelta
+    from backend.indian_stocks import NIFTY50_STOCKS, BUDGET_LOW_PRICED_STOCKS
+    nifty50_symbols = set(s["symbol"] for s in NIFTY50_STOCKS)
+    budget_symbols  = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
+    ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    current_time_str = ist_now.strftime("%H:%M")
     is_eod_squareoff_time = current_time_str >= "15:25"
 
     for symbol, pos in list(open_positions.items()):
@@ -276,11 +317,34 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
         action = pos["action"]
         trade_id = pos["id"]
 
+        # ⏱️ 1-Hour Scalp Timeout Check
+        if pos.get("company_name") and "(Scalp)" in pos["company_name"]:
+            opened_at_str = pos.get("opened_at")
+            if opened_at_str:
+                opened_at = None
+                try:
+                    opened_at = datetime.strptime(opened_at_str, "%Y-%m-%d %H:%M:%S.%f")
+                except ValueError:
+                    try:
+                        opened_at = datetime.strptime(opened_at_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        pass
+                if opened_at:
+                    age_seconds = (datetime.utcnow() - opened_at).total_seconds()
+                    if age_seconds >= 3600:  # 1 hour
+                        res = close_paper_position(db, symbol, price, exit_reason="SCALP_TIMEOUT")
+                        results.append(res)
+                        _peak_prices.pop(trade_id, None)
+                        _peak_pnl.pop(trade_id, None)
+                        logger.info("⏱️ Scalp 1-Hour Timeout reached for %s. Closed position.", symbol)
+                        continue
+
         # EOD Auto-Squareoff at 3:25 PM IST
         if is_eod_squareoff_time:
             res = close_paper_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
             results.append(res)
             _peak_prices.pop(trade_id, None)
+            _peak_pnl.pop(trade_id, None)
             continue
 
         if action == "BUY":
@@ -293,19 +357,70 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 peak = price
                 _peak_prices[trade_id] = peak
 
-            # 1. Trailing Peak Profit Lock: If peak gain reaches >= 50% of T1 distance, lock 75% of peak gain if price retreats 25%
-            max_gain  = t1_p - entry_p
-            peak_gain = peak - entry_p
-            if max_gain > 0 and peak_gain >= (max_gain * 0.5):
-                retreat_trigger = peak - (peak_gain * 0.25)
-                if price <= retreat_trigger:
-                    res = close_paper_position(db, trade_id, price, exit_reason="PROFIT_RETREAT_LOCK")
+            # Current P&L
+            current_pnl_buy = round((price - entry_p) * pos["quantity"], 2)
+
+            # ══ NIFTY 50 FLAT LOSS GUARD ══════════════════════════════════
+            if symbol in nifty50_symbols:
+                trade_value = entry_p * pos["quantity"]
+                if trade_value <= 10500.0:  # Only for trades ~₹10k or below
+                    if current_pnl_buy <= -100.0:
+                        res = close_paper_position(db, symbol, price, exit_reason="SL_HIT")
+                        results.append(res)
+                        _peak_prices.pop(trade_id, None)
+                        _peak_pnl.pop(trade_id, None)
+                        logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_buy, trade_value)
+                        continue
+
+            # ══ NIFTY 50: 300 PROFIT LOCK GUARD ══════════════════════════
+            if symbol in nifty50_symbols:
+                peak_pnl_nifty = _peak_pnl.get(trade_id, 0.0)
+                if current_pnl_buy > peak_pnl_nifty:
+                    _peak_pnl[trade_id] = current_pnl_buy
+                    peak_pnl_nifty = current_pnl_buy
+                # If peak profit crossed ₹300 and retreated to ₹150 → Lock ₹150 profit
+                if peak_pnl_nifty >= 300.0 and current_pnl_buy <= 150.0:
+                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK_300")
                     results.append(res)
                     _peak_prices.pop(trade_id, None)
-                    logger.info("💰 Trailing Peak Profit Lock triggered for %s @ ₹%.2f (Locked Peak Profit!)", symbol, price)
+                    _peak_pnl.pop(trade_id, None)
+                    logger.info("🔒 Nifty 300 Profit Lock: %s Peak=₹%.0f Now=₹%.0f → Locked ₹150!", symbol, peak_pnl_nifty, current_pnl_buy)
                     continue
 
-            # 2. Upgraded Trailing Stop-Loss: As soon as price reaches 35% towards Target 1, trail SL to Entry price (Zero Loss Guarantee)
+            # ══ BUDGET STOCKS SPECIAL RULES ═══════════════════════════════
+            if symbol in budget_symbols:
+                # Track peak P&L (₹) for this trade
+                peak_pnl = _peak_pnl.get(trade_id, 0.0)
+                if current_pnl_buy > peak_pnl:
+                    _peak_pnl[trade_id] = current_pnl_buy
+                    peak_pnl = current_pnl_buy
+
+                # Trailing P&L stop: if peak reached >= ₹20 and dropped by ₹20 → close to lock profit
+                if peak_pnl >= 20.0 and (peak_pnl - current_pnl_buy) >= 20.0:
+                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK")
+                    results.append(res)
+                    _peak_prices.pop(trade_id, None)
+                    _peak_pnl.pop(trade_id, None)
+                    logger.info("🔒 Budget Trailing Stop: %s Peak=₹%.0f Now=₹%.0f → Locked!", symbol, peak_pnl, current_pnl_buy)
+                    continue
+
+            # ══ STANDARD TARGETS & TRAILING LOGIC ════════════════════════
+            t1_threshold = 80.0 if symbol in budget_symbols else 600.0
+            max_gain  = t1_p - entry_p
+            peak_gain = peak - entry_p
+
+            # 1. Trailing Peak Profit Lock (price-based) - Non-budget stocks only
+            if symbol not in budget_symbols and max_gain > 0 and peak_gain >= (max_gain * 0.5):
+                retreat_trigger = peak - (peak_gain * 0.25)
+                if price <= retreat_trigger:
+                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK")
+                    results.append(res)
+                    _peak_prices.pop(trade_id, None)
+                    _peak_pnl.pop(trade_id, None)
+                    logger.info("💰 Trailing Profit Lock for %s @ ₹%.2f", symbol, price)
+                    continue
+
+            # 2. Trail SL to Break-Even once 35% of T1 reached
             trigger_progress = entry_p + (max_gain * 0.35) if max_gain > 0 else entry_p
             if price >= trigger_progress and pos["stop_loss"] < entry_p:
                 pos["stop_loss"] = entry_p
@@ -313,20 +428,29 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 if t_obj:
                     t_obj.stop_loss = entry_p
                     db.commit()
-                logger.info("🛡️ Trailing SL activated for %s: SL moved to Break-Even (₹%.2f)", symbol, entry_p)
+                logger.info("🛡️ Trailing SL → Break-Even for %s (₹%.2f)", symbol, entry_p)
 
             if price >= pos["target2"]:
                 res = close_paper_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
-            elif price >= pos["target1"]:
+                _peak_pnl.pop(trade_id, None)
+            elif current_pnl_buy >= t1_threshold:
+                try:
+                    from backend.telegram_alerts import alert_profit_target_approaching
+                    alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_buy, t1_threshold)
+                except Exception as e:
+                    logger.warning("Telegram alert failed: %s", e)
                 res = close_paper_position(db, symbol, price, exit_reason="T1_HIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
+                logger.info("🎯 ₹%.0f Target Hit for %s! P&L: ₹%.2f", t1_threshold, symbol, current_pnl_buy)
             elif price <= pos["stop_loss"]:
                 res = close_paper_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
 
         elif action == "SELL":
             entry_p = pos["entry_price"]
@@ -338,19 +462,70 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 peak = price
                 _peak_prices[trade_id] = peak
 
-            # 1. Trailing Peak Profit Lock for SELL
-            max_gain  = entry_p - t1_p
-            peak_gain = entry_p - peak
-            if max_gain > 0 and peak_gain >= (max_gain * 0.5):
-                retreat_trigger = peak + (peak_gain * 0.25)
-                if price >= retreat_trigger:
-                    res = close_paper_position(db, trade_id, price, exit_reason="PROFIT_RETREAT_LOCK")
+            # Current P&L for SELL
+            current_pnl_sell = round((entry_p - price) * pos["quantity"], 2)
+
+            # ══ NIFTY 50 FLAT LOSS GUARD ══════════════════════════════════
+            if symbol in nifty50_symbols:
+                trade_value = entry_p * pos["quantity"]
+                if trade_value <= 10500.0:  # Only for trades ~₹10k or below
+                    if current_pnl_sell <= -100.0:
+                        res = close_paper_position(db, symbol, price, exit_reason="SL_HIT")
+                        results.append(res)
+                        _peak_prices.pop(trade_id, None)
+                        _peak_pnl.pop(trade_id, None)
+                        logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_sell, trade_value)
+                        continue
+
+            # ══ NIFTY 50: 300 PROFIT LOCK GUARD ══════════════════════════
+            if symbol in nifty50_symbols:
+                peak_pnl_nifty = _peak_pnl.get(trade_id, 0.0)
+                if current_pnl_sell > peak_pnl_nifty:
+                    _peak_pnl[trade_id] = current_pnl_sell
+                    peak_pnl_nifty = current_pnl_sell
+                # If peak profit crossed ₹300 and retreated to ₹150 → Lock ₹150 profit
+                if peak_pnl_nifty >= 300.0 and current_pnl_sell <= 150.0:
+                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK_300")
                     results.append(res)
                     _peak_prices.pop(trade_id, None)
-                    logger.info("💰 Trailing Peak Profit Lock triggered for %s @ ₹%.2f (Locked Peak Profit!)", symbol, price)
+                    _peak_pnl.pop(trade_id, None)
+                    logger.info("🔒 Nifty 300 Profit Lock: %s Peak=₹%.0f Now=₹%.0f → Locked ₹150!", symbol, peak_pnl_nifty, current_pnl_sell)
                     continue
 
-            # 2. Upgraded Trailing Stop-Loss for SELL
+            # ══ BUDGET STOCKS SPECIAL RULES ═══════════════════════════════
+            if symbol in budget_symbols:
+                # Track peak P&L (₹) for this trade
+                peak_pnl = _peak_pnl.get(trade_id, 0.0)
+                if current_pnl_sell > peak_pnl:
+                    _peak_pnl[trade_id] = current_pnl_sell
+                    peak_pnl = current_pnl_sell
+
+                # Trailing P&L stop: if peak reached >= ₹20 and dropped by ₹20 → close to lock profit
+                if peak_pnl >= 20.0 and (peak_pnl - current_pnl_sell) >= 20.0:
+                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK")
+                    results.append(res)
+                    _peak_prices.pop(trade_id, None)
+                    _peak_pnl.pop(trade_id, None)
+                    logger.info("🔒 Budget Trailing Stop: %s Peak=₹%.0f Now=₹%.0f → Locked!", symbol, peak_pnl, current_pnl_sell)
+                    continue
+
+            # ══ STANDARD TARGETS & TRAILING LOGIC ════════════════════════
+            t1_threshold = 80.0 if symbol in budget_symbols else 600.0
+            max_gain  = entry_p - t1_p
+            peak_gain = entry_p - peak
+
+            # 1. Trailing Peak Profit Lock for SELL (price-based) - Non-budget stocks only
+            if symbol not in budget_symbols and max_gain > 0 and peak_gain >= (max_gain * 0.5):
+                retreat_trigger = peak + (peak_gain * 0.25)
+                if price >= retreat_trigger:
+                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK")
+                    results.append(res)
+                    _peak_prices.pop(trade_id, None)
+                    _peak_pnl.pop(trade_id, None)
+                    logger.info("💰 Trailing Profit Lock for %s @ ₹%.2f", symbol, price)
+                    continue
+
+            # 2. Trail SL to Break-Even once 35% of T1 reached
             trigger_progress = entry_p - (max_gain * 0.35) if max_gain > 0 else entry_p
             if price <= trigger_progress and pos["stop_loss"] > entry_p:
                 pos["stop_loss"] = entry_p
@@ -358,20 +533,29 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 if t_obj:
                     t_obj.stop_loss = entry_p
                     db.commit()
-                logger.info("🛡️ Trailing SL activated for %s: SL moved to Break-Even (₹%.2f)", symbol, entry_p)
+                logger.info("🛡️ Trailing SL → Break-Even for %s (₹%.2f)", symbol, entry_p)
 
             if price <= pos["target2"]:
                 res = close_paper_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
-            elif price <= pos["target1"]:
+                _peak_pnl.pop(trade_id, None)
+            elif current_pnl_sell >= t1_threshold:
+                try:
+                    from backend.telegram_alerts import alert_profit_target_approaching
+                    alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_sell, t1_threshold)
+                except Exception as e:
+                    logger.warning("Telegram alert failed: %s", e)
                 res = close_paper_position(db, symbol, price, exit_reason="T1_HIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
+                logger.info("🎯 ₹%.0f Target Hit for %s! P&L: ₹%.2f", t1_threshold, symbol, current_pnl_sell)
             elif price >= pos["stop_loss"]:
                 res = close_paper_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
 
     return results
 

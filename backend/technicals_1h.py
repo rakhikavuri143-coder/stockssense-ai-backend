@@ -237,12 +237,21 @@ def analyze_1h(symbol: str) -> Optional[dict]:
     price_vs_vwap = "ABOVE" if current_price > last_vwap else "BELOW"
 
     # Stop Loss calculation (ATR-based + Structural)
-    sl_buy  = round(max(swing_low, current_price - 1.5 * last_atr), 2)
-    sl_sell = round(min(swing_high, current_price + 1.5 * last_atr), 2)
+    calc_sl_buy = current_price - (1.5 * last_atr if last_atr > 0 else current_price * 0.01)
+    if swing_low < current_price:
+        sl_buy = round(min(swing_low, calc_sl_buy), 2)
+    else:
+        sl_buy = round(calc_sl_buy, 2)
 
-    # Target 1 & 2 (1:1.5 & 1:2.5 R:R)
-    buy_risk  = current_price - sl_buy
-    sell_risk = sl_sell - current_price
+    calc_sl_sell = current_price + (1.5 * last_atr if last_atr > 0 else current_price * 0.01)
+    if swing_high > current_price:
+        sl_sell = round(max(swing_high, calc_sl_sell), 2)
+    else:
+        sl_sell = round(calc_sl_sell, 2)
+
+    # Target 1 & 2 (1:1.8 & 1:3.0 R:R guarantee)
+    buy_risk  = max(current_price * 0.005, current_price - sl_buy)
+    sell_risk = max(current_price * 0.005, sl_sell - current_price)
 
     target1_buy  = round(current_price + buy_risk  * 1.8, 2)
     target2_buy  = round(current_price + buy_risk  * 3.0, 2)

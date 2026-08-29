@@ -280,27 +280,44 @@ def check_sl_distance_guard(entry_price: float, stop_loss: float, min_dist_pct: 
 
 # ─────────────────────────── GUARD 9: RSI EXTREMES TRAP ────────────────────────────
 
-def check_rsi_extremes_guard(signal: str, rsi_15m: float) -> dict:
+def check_rsi_extremes_guard(signal: str, rsi_15m: float, is_scalp: bool = False) -> dict:
     """
     Guard 9: Block BUY if RSI 15m > 70 (Overbought - Pullback trap).
     Block SELL if RSI 15m < 30 (Oversold - Bounce trap).
+    For scalp mode:
+    BUY signals must have RSI 15m between 52 and 67 (strong momentum, not overbought).
+    SELL signals must have RSI 15m between 33 and 48 (weak momentum, not oversold).
     """
     if rsi_15m <= 0:  # Data unavailable
         return {"passed": True, "reason": "✅ RSI Extremes: Data unavailable"}
     
-    if signal == "BUY" and rsi_15m >= 70.0:
-        return {
-            "passed": False,
-            "reason": f"🚨 RSI 15m ({rsi_15m:.1f}) is Overbought (≥70) — BUY signal BLOCKED (Pullback Trap Risk)"
-        }
-    if signal == "SELL" and rsi_15m <= 30.0:
-        return {
-            "passed": False,
-            "reason": f"🚨 RSI 15m ({rsi_15m:.1f}) is Oversold (≤30) — SELL signal BLOCKED (Bounce Trap Risk)"
-        }
+    if is_scalp:
+        if signal == "BUY":
+            if rsi_15m < 52.0 or rsi_15m > 67.0:
+                return {
+                    "passed": False,
+                    "reason": f"🚨 Scalp RSI 15m ({rsi_15m:.1f}) is out of momentum zone (52-67) — BUY BLOCKED"
+                }
+        elif signal == "SELL":
+            if rsi_15m < 33.0 or rsi_15m > 48.0:
+                return {
+                    "passed": False,
+                    "reason": f"🚨 Scalp RSI 15m ({rsi_15m:.1f}) is out of momentum zone (33-48) — SELL BLOCKED"
+                }
+    else:
+        if signal == "BUY" and rsi_15m >= 70.0:
+            return {
+                "passed": False,
+                "reason": f"🚨 RSI 15m ({rsi_15m:.1f}) is Overbought (≥70) — BUY signal BLOCKED (Pullback Trap Risk)"
+            }
+        if signal == "SELL" and rsi_15m <= 30.0:
+            return {
+                "passed": False,
+                "reason": f"🚨 RSI 15m ({rsi_15m:.1f}) is Oversold (≤30) — SELL signal BLOCKED (Bounce Trap Risk)"
+            }
     return {
         "passed": True,
-        "reason": f"✅ RSI 15m ({rsi_15m:.1f}) within safe trade zone (30-70)"
+        "reason": f"✅ RSI 15m ({rsi_15m:.1f}) within safe trade zone"
     }
 
 
@@ -339,19 +356,20 @@ def run_all_guards(
     open_trades_count: int = 0,
     rsi_15m: float = 0.0,
     losses_today: int = 0,
+    is_scalp: bool = False,
 ) -> dict:
     """
     Run all 10 loss prevention guards:
     1. Confidence Threshold (>=90%)
     2. Nifty Macro Market Trend Guard
-    3. VWAP + RVOL Trap Filter
+    3. VWAP + RVOL Trap Filter (Stricter RVOL >= 1.8x in scalp mode)
     4. R:R Ratio (>=1:1.5)
     5. Position Sizing
     6. Trailing Stop Loss Engine
     7. Sector Index Confluence Guard
     8. Max Open Trades Limit (Max 2)
     9. SL Distance Bounds (0.4% - 3.5%)
-    10. RSI Extremes Trap Filter (30 - 70)
+    10. RSI Extremes Trap Filter (30 - 70 standard, strict momentum zone in scalp mode)
     11. Daily Loss Circuit Breaker (Max 2 Losses/day)
     """
     results = {}
@@ -367,8 +385,8 @@ def run_all_guards(
         results["block_reason"] = nifty["reason"]
         return results
 
-    # Guard 3: VWAP Trap Filter
-    results["vwap_trap"] = check_vwap_trap_filter(signal, current_price, vwap, rvol)
+    # Guard 3: VWAP Trap Filter (Stricter min RVOL = 1.8x for scalps)
+    results["vwap_trap"] = check_vwap_trap_filter(signal, current_price, vwap, rvol, rvol_min=1.8 if is_scalp else 1.3)
 
     # Guard 4: R:R Ratio
     results["rr_ratio"] = check_rr_ratio(entry_price, stop_loss, target1)
@@ -386,8 +404,8 @@ def run_all_guards(
     # Guard 8: SL Distance Bounds
     results["sl_distance"] = check_sl_distance_guard(entry_price, stop_loss)
 
-    # Guard 9: RSI Extremes Trap Filter
-    results["rsi_extremes"] = check_rsi_extremes_guard(signal, rsi_15m)
+    # Guard 9: RSI Extremes Trap Filter (scalp zones 52-67 / 33-48)
+    results["rsi_extremes"] = check_rsi_extremes_guard(signal, rsi_15m, is_scalp=is_scalp)
 
     # Guard 10: Daily Loss Circuit Breaker
     results["circuit_breaker"] = check_daily_loss_circuit_breaker(losses_today, max_losses=2)

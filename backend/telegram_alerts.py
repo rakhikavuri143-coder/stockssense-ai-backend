@@ -53,39 +53,56 @@ def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
 # ─────────────────────── SIGNAL ALERTS ───────────────────────
 
 def alert_scan_signals(signals: list):
-    """Send Telegram alert for BUY/SELL signals found after a scan."""
+    """Send Telegram alert for Top 3 Nifty 50 + Top 3 Budget Stock BUY/SELL signals."""
     if not signals:
         return
+
+    from backend.indian_stocks import BUDGET_LOW_PRICED_STOCKS
+    budget_symbols = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
 
     buy_sell = [s for s in signals if s.get("signal") in ("BUY", "SELL") and s.get("confidence", 0) >= 85]
     if not buy_sell:
         return
 
-    header = f"<b>StockSense AI Signal Alert</b>\n<i>{_ist_now()}</i>\n{'=' * 30}\n"
+    nifty_signals  = [s for s in buy_sell if s.get("symbol") not in budget_symbols][:3]
+    budget_signals = [s for s in buy_sell if s.get("symbol") in budget_symbols][:3]
+
+    header = f"<b>📊 StockSense AI — Signal Alert</b>\n<i>{_ist_now()}</i>\n{'=' * 30}\n"
     cards = []
 
-    for s in buy_sell[:5]:  # Max 5 alerts per scan
-        signal_emoji = "🟢 BUY" if s["signal"] == "BUY" else "🔴 SELL"
-        approved_tag = "✅ APPROVED" if s.get("approved") else "⚠️ REVIEW"
-        rank_tag     = f"🏆 TOP #{s['rank']} " if s.get("rank") else ""
+    if nifty_signals:
+        cards.append("<b>🏆 TOP 3 NIFTY 50 SIGNALS:</b>")
+        for idx, s in enumerate(nifty_signals, 1):
+            signal_emoji = "🟢 BUY" if s["signal"] == "BUY" else "🔴 SELL"
+            approved_tag = "✅ APPROVED" if s.get("approved") else "⚠️ REVIEW"
+            card = (
+                f"<b>#{idx} {s['symbol'].replace('.NS', '')}</b> — {s.get('company_name', '')}\n"
+                f"Signal: <b>{signal_emoji}</b> | Confidence: <b>{s.get('confidence', 0):.1f}%</b>\n"
+                f"Guard: {approved_tag}\n"
+                f"Price: ₹{s.get('current_price', 0):,.2f} | SL: ₹{s.get('stop_loss', 0):,.2f} | T1: ₹{s.get('target1', 0):,.2f}"
+            )
+            cards.append(card)
 
-        card = (
-            f"{rank_tag}<b>{s['symbol'].replace('.NS', '')}</b> — {s.get('company_name', '')}\n"
-            f"Signal: <b>{signal_emoji}</b> | Confidence: <b>{s.get('confidence', 0):.1f}%</b>\n"
-            f"Guard: {approved_tag}\n"
-            f"Entry: ₹{s.get('current_price', 0):,.2f}\n"
-            f"Target 1: ₹{s.get('target1', 0):,.2f}\n"
-            f"Target 2: ₹{s.get('target2', 0):,.2f}\n"
-            f"Stop Loss: ₹{s.get('stop_loss', 0):,.2f}\n"
-            f"R:R Ratio: 1:{s.get('rr_ratio', 0):.1f}\n"
-            f"Sector: {s.get('sector', 'N/A')}"
-        )
-        cards.append(card)
+    if budget_signals:
+        if nifty_signals:
+            cards.append("\n" + "=" * 30)
+        cards.append("<b>⚡ TOP 3 BUDGET STOCK SIGNALS (Under ₹200):</b>")
+        for idx, s in enumerate(budget_signals, 1):
+            signal_emoji = "🟢 BUY" if s["signal"] == "BUY" else "🔴 SELL"
+            approved_tag = "✅ APPROVED" if s.get("approved") else "⚠️ REVIEW"
+            card = (
+                f"<b>#{idx} {s['symbol'].replace('.NS', '')}</b> — {s.get('company_name', '')}\n"
+                f"Signal: <b>{signal_emoji}</b> | Confidence: <b>{s.get('confidence', 0):.1f}%</b>\n"
+                f"Guard: {approved_tag}\n"
+                f"Price: ₹{s.get('current_price', 0):,.2f} | SL: ₹{s.get('stop_loss', 0):,.2f} | T1: ₹{s.get('target1', 0):,.2f}"
+            )
+            cards.append(card)
 
     msg = header + "\n\n".join(cards)
-    msg += f"\n\n💡 <i>Total {len(buy_sell)} signal(s) found. Open StockSense AI dashboard to trade.</i>"
+    msg += f"\n\n💡 <i>Open StockSense AI dashboard to trade.</i>"
 
     send_telegram_message(msg)
+
 
 
 # ─────────────────────── TRADE EXECUTION ALERTS ───────────────────────
@@ -121,7 +138,7 @@ def alert_trade_closed(symbol: str, action: str, entry_price: float,
 
     reason_map = {
         "SL_HIT":             "🛑 Stop Loss Hit",
-        "T1_HIT":             "🎯 Target 1 Hit!",
+        "T1_HIT":             "🎯 ₹150 Profit Target Hit!",
         "T2_HIT":             "🎯🎯 Target 2 Hit!",
         "MANUAL":             "✋ Manual Exit",
         "EOD_AUTO_SQUAREOFF": "⏰ EOD 3:25 PM Auto Close",
@@ -139,6 +156,31 @@ def alert_trade_closed(symbol: str, action: str, entry_price: float,
         f"Qty: {quantity}\n"
         f"P&L: <b>{pnl_emoji} ₹{pnl:+,.2f} ({pnl_pct:+.2f}%)</b>\n"
         f"Reason: {reason_text}"
+    )
+    send_telegram_message(msg)
+
+
+# ─────────────────────── PROFIT TARGET HIT ALERT ───────────────────────
+
+def alert_profit_target_approaching(symbol: str, action: str, entry_price: float,
+                                     current_price: float, quantity: int,
+                                     current_pnl: float, threshold: float):
+    """Alert BEFORE trade is closed when flat profit target (₹600) is reached.
+    This fires BEFORE close_paper_position so user sees the notification first."""
+    pnl_emoji = "🟢" if current_pnl > 0 else "🔴"
+
+    msg = (
+        f"<b>🎯💰 PROFIT TARGET HIT!</b>\n"
+        f"<i>{_ist_now()}</i>\n"
+        f"{'=' * 30}\n"
+        f"<b>{symbol.replace('.NS', '')}</b>\n"
+        f"Action: {'🟢 BUY' if action == 'BUY' else '🔴 SELL'}\n"
+        f"Entry: ₹{entry_price:,.2f} → Current: ₹{current_price:,.2f}\n"
+        f"Qty: {quantity}\n"
+        f"<b>{pnl_emoji} Profit: ₹{current_pnl:+,.2f}</b>\n"
+        f"Target: ₹{threshold:,.0f} ✅ REACHED!\n"
+        f"{'=' * 30}\n"
+        f"⚡ <i>Auto-closing trade now...</i>"
     )
     send_telegram_message(msg)
 
