@@ -1638,7 +1638,10 @@ function trackBrokerClick(brokerName) {
 //  GOOGLE LOGIN & USER SESSION
 // ══════════════════════════════════════════════════
 
+const SS_USER_KEY  = 'ss_user';
+const SS_TRIAL_KEY = 'ss_trial';
 let GOOGLE_CLIENT_ID = "";
+
 
 /** Called on every page load — check if user already logged in */
 async function initAuthSession() {
