@@ -14,6 +14,7 @@ let activeSector      = 'All';
 let isMarketOpenGlobal = true;
 let autoScanTimerId   = null;
 let autoScanSecLeft   = 180; // 3 minutes auto-refresh interval
+let lastScanCategory  = 'nifty50';
 
 // ─────────────────────── INIT & AUTO-RECONNECT ───────────────────────
 let isNetworkOffline = false;
@@ -144,20 +145,74 @@ async function loadNiftyStatus() {
 }
 
 // ─────────────────────── WATCHLIST ───────────────────────
+let allWatchlistStocks = [];
+let activeWatchlistCategory = 'all';
+
 async function loadWatchlist() {
   try {
-    const res  = await fetch('/api/stocks');
+    const res  = await fetch('/api/stocks?category=all');
     const data = await res.json();
-    renderWatchlist(data.stocks);
-    renderSectorFilter(data.stocks);
+    allWatchlistStocks = data.stocks || [];
+
+    // Fetch budget stock symbols for category tagging
+    const budgetRes = await fetch('/api/stocks/budget');
+    const budgetData = await budgetRes.json();
+    const budgetSet = new Set((budgetData.stocks || []).map(s => s.symbol));
+
+    allWatchlistStocks.forEach(s => {
+      s.isBudget = budgetSet.has(s.symbol);
+    });
+
+    filterAndRenderWatchlist();
+    renderSectorFilter(allWatchlistStocks);
   } catch (e) {
     console.error('Watchlist error:', e);
   }
 }
 
+function filterCategory(cat) {
+  activeWatchlistCategory = cat;
+  document.querySelectorAll('#categoryFilterGroup .sector-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  const activeBtn = document.getElementById(`catBtn-${cat}`);
+  if (activeBtn) activeBtn.classList.add('active');
+  filterAndRenderWatchlist();
+}
+
+function filterWatchlistSearch() {
+  filterAndRenderWatchlist();
+}
+
+function filterAndRenderWatchlist() {
+  const query = (document.getElementById('watchlistSearch')?.value || '').toLowerCase().trim();
+  let filtered = allWatchlistStocks;
+
+  if (activeWatchlistCategory === 'budget') {
+    filtered = filtered.filter(s => s.isBudget);
+  } else if (activeWatchlistCategory === 'nifty50') {
+    filtered = filtered.filter(s => !s.isBudget);
+  }
+
+  if (activeSector !== 'All') {
+    filtered = filtered.filter(s => s.sector === activeSector);
+  }
+
+  if (query) {
+    filtered = filtered.filter(s =>
+      s.symbol.toLowerCase().includes(query) ||
+      s.name.toLowerCase().includes(query) ||
+      s.sector.toLowerCase().includes(query)
+    );
+  }
+
+  renderWatchlist(filtered);
+}
+
 function renderSectorFilter(stocks) {
   const sectors = ['All', ...new Set(stocks.map(s => s.sector))].sort();
   const el = document.getElementById('sectorFilter');
+  if (!el) return;
   el.innerHTML = sectors.map(s =>
     `<button class="sector-btn ${s === activeSector ? 'active' : ''}" onclick="filterSector('${s}')">${s}</button>`
   ).join('');
@@ -165,25 +220,36 @@ function renderSectorFilter(stocks) {
 
 function filterSector(sector) {
   activeSector = sector;
-  document.querySelectorAll('.sector-btn').forEach(b => {
+  document.querySelectorAll('#sectorFilter .sector-btn').forEach(b => {
     b.classList.toggle('active', b.textContent === sector);
   });
-  const items = document.querySelectorAll('.watchlist-item');
-  items.forEach(item => {
-    const itemSector = item.dataset.sector;
-    item.style.display = (sector === 'All' || itemSector === sector) ? '' : 'none';
-  });
+  filterAndRenderWatchlist();
 }
 
 function renderWatchlist(stocks) {
   const grid = document.getElementById('watchlistGrid');
-  grid.innerHTML = stocks.map(s => `
-    <div class="watchlist-item" data-sector="${s.sector}" onclick="scanSingle('${s.symbol}', '${s.name}')">
-      <div class="wl-symbol">${s.symbol.replace('.NS','')}</div>
-      <div class="wl-name">${s.name}</div>
-      <div class="wl-sector">${s.sector}</div>
-    </div>
-  `).join('');
+  if (!grid) return;
+  if (!stocks || stocks.length === 0) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#94a3b8">No stocks found matching filter.</div>';
+    return;
+  }
+
+  grid.innerHTML = stocks.map(s => {
+    const badge = s.isBudget
+      ? '<span style="font-size:0.68rem;background:rgba(234,179,8,0.15);color:#eab308;border:1px solid rgba(234,179,8,0.3);padding:0.15rem 0.4rem;border-radius:4px;font-weight:700">⚡ BUDGET (<₹200)</span>'
+      : '<span style="font-size:0.68rem;background:rgba(59,130,246,0.15);color:#60a5fa;border:1px solid rgba(59,130,246,0.3);padding:0.15rem 0.4rem;border-radius:4px;font-weight:700">🏆 NIFTY 50</span>';
+
+    return `
+      <div class="watchlist-item" data-sector="${s.sector}" onclick="scanSingle('${s.symbol}', '${s.name}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.25rem">
+          <div class="wl-symbol">${s.symbol.replace('.NS','')}</div>
+          ${badge}
+        </div>
+        <div class="wl-name">${s.name}</div>
+        <div class="wl-sector">${s.sector}</div>
+      </div>
+    `;
+  }).join('');
 }
 
 async function scanSingle(symbol, name) {
@@ -245,7 +311,7 @@ function startAutoScanCountdown(seconds = 180) {
     autoScanSecLeft--;
     if (autoScanSecLeft <= 0) {
       clearAutoScanTimer();
-      startScan();
+      startScan(lastScanCategory);
     } else {
       updateBadge();
     }
@@ -253,9 +319,13 @@ function startAutoScanCountdown(seconds = 180) {
 }
 
 // ─────────────────────── SCAN ALL ───────────────────────
-async function startScan() {
+async function startScan(category = 'nifty50') {
   clearAutoScanTimer();
-  const btn = document.getElementById('scanBtn');
+  lastScanCategory = category;
+  const isBudget = category === 'budget';
+  const isScalp  = category === 'fast_scalp';
+  const btnId    = isScalp ? 'scalpScanBtn' : (isBudget ? 'budgetScanBtn' : 'scanBtn');
+  const btn = document.getElementById(btnId);
   if (btn) {
     btn.classList.add('loading');
     btn.innerHTML = '<span class="btn-icon">⏳</span> Scanning...';
@@ -288,16 +358,20 @@ async function startScan() {
       res = await fetch('/api/analyze/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confidence_threshold: threshold }),
+        body: JSON.stringify({ confidence_threshold: threshold, category: category }),
       });
       if (!res.ok) throw new Error('Stream HTTP ' + res.status);
     } catch (streamErr) {
       console.warn('Streaming scan failed, falling back to standard scan:', streamErr);
-      setStatusLoading('Scanning 50 Nifty stocks with AI...');
+      setStatusLoading(
+        isScalp  ? '🔥 Scalp-scanning 18 budget stocks (85% confidence)...' :
+        isBudget ? 'Scanning 18 Budget stocks with AI...' :
+                   'Scanning 50 Nifty stocks with AI...'
+      );
       const fallbackRes = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confidence_threshold: threshold }),
+        body: JSON.stringify({ confidence_threshold: threshold, category: category }),
       });
       const data = await fallbackRes.json();
       currentSignals = data.signals || [];
@@ -382,12 +456,27 @@ async function startScan() {
   } finally {
     if (btn) {
       btn.classList.remove('loading');
-      btn.innerHTML = '<span class="btn-icon">🔍</span> Scan All Stocks';
+      if (isScalp) {
+        btn.innerHTML = '<span class="btn-icon">🔥</span> 1-Hr Fast Scalp';
+      } else if (isBudget) {
+        btn.innerHTML = '<span class="btn-icon">⚡</span> Scan Budget Stocks';
+      } else {
+        btn.innerHTML = '<span class="btn-icon">🔍</span> Scan Nifty 50';
+      }
     }
-    // Automatically start 3-minute auto-refresh countdown
-    startAutoScanCountdown(180);
+    // Scalp mode: auto-refresh every 90s; normal: every 3 min
+    startAutoScanCountdown(isScalp ? 90 : 180);
   }
 }
+
+// ─────────────────────── SCAN BUDGET ───────────────────────
+async function startBudgetScan() {
+  return startScan('budget');
+}
+
+// Expose functions globally for inline HTML event handlers
+window.startScan = startScan;
+window.startBudgetScan = startBudgetScan;
 
 // Append a single signal card to the grid (used during streaming)
 function appendSignalCard(sig) {
@@ -467,8 +556,8 @@ function buildSignalCardHTML(s) {
       <div class="news-snippet">${s.news_summary || s.reasoning || 'No news summary available.'}</div>
 
       <div class="card-actions" onclick="event.stopPropagation()">
-        ${s.signal === 'BUY'  || s.signal === 'AVOID' ? `<button class="btn-paper-buy"  onclick="liveQuickPaperBuy(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val})">📝 Paper BUY</button>` : ''}
-        ${s.signal === 'SELL' || s.signal === 'AVOID' ? `<button class="btn-paper-sell" onclick="liveQuickPaperSell(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val})">📝 Paper SELL</button>` : ''}
+        ${s.signal === 'BUY'  || s.signal === 'AVOID' ? `<button class="btn-paper-buy"  onclick="liveQuickPaperBuy(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val}, ${s.scalp_mode ? true : false})">📝 Paper BUY</button>` : ''}
+        ${s.signal === 'SELL' || s.signal === 'AVOID' ? `<button class="btn-paper-sell" onclick="liveQuickPaperSell(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val}, ${s.scalp_mode ? true : false})">📝 Paper SELL</button>` : ''}
         <button class="btn-detail" onclick="openModalData(${encodeSignal(s)})">📊 Chart</button>
       </div>
     </div>
@@ -594,8 +683,8 @@ function renderModal(s) {
     </div>
 
     <div style="display:flex;gap:0.75rem;margin-top:1.5rem">
-      <button class="btn-paper-buy" style="flex:1;padding:0.75rem;font-size:0.9rem" onclick="quickPaperBuy(this,${sigId},'${s.symbol}','${safeName}',${entryPrice},${stopLoss},${target1Val},${target2Val});closeModal()">📝 Take Paper BUY Trade</button>
-      <button class="btn-paper-sell" style="flex:1;padding:0.75rem;font-size:0.9rem" onclick="quickPaperSell(this,${sigId},'${s.symbol}','${safeName}',${entryPrice},${stopLoss},${target1Val},${target2Val});closeModal()">📝 Take Paper SELL Trade</button>
+      <button class="btn-paper-buy" style="flex:1;padding:0.75rem;font-size:0.9rem" onclick="quickPaperBuy(this,${sigId},'${s.symbol}','${safeName}',${entryPrice},${stopLoss},${target1Val},${target2Val},${s.scalp_mode ? true : false});closeModal()">📝 Take Paper BUY Trade</button>
+      <button class="btn-paper-sell" style="flex:1;padding:0.75rem;font-size:0.9rem" onclick="quickPaperSell(this,${sigId},'${s.symbol}','${safeName}',${entryPrice},${stopLoss},${target1Val},${target2Val},${s.scalp_mode ? true : false});closeModal()">📝 Take Paper SELL Trade</button>
     </div>
   `;
 
@@ -673,19 +762,21 @@ function renderFiveYearChart(symbol, data, high52, low52) {
 // ─────────────────────── PAPER TRADING ───────────────────────
 let _qoPrice = 0;
 let _qoSl = 0;
+let _qoIsScalp = false;
 
-async function quickPaperBuy(btn, signalId, symbol, name, price, sl, t1, t2) {
-  openQuickOrderModal(signalId, symbol, name, 'BUY', price, sl, t1, t2);
+async function quickPaperBuy(btn, signalId, symbol, name, price, sl, t1, t2, isScalp = false) {
+  openQuickOrderModal(signalId, symbol, name, 'BUY', price, sl, t1, t2, isScalp);
 }
 
-async function quickPaperSell(btn, signalId, symbol, name, price, sl, t1, t2) {
-  openQuickOrderModal(signalId, symbol, name, 'SELL', price, sl, t1, t2);
+async function quickPaperSell(btn, signalId, symbol, name, price, sl, t1, t2, isScalp = false) {
+  openQuickOrderModal(signalId, symbol, name, 'SELL', price, sl, t1, t2, isScalp);
 }
 
-function openQuickOrderModal(signalId, symbol, name, action, price, sl, t1, t2) {
+function openQuickOrderModal(signalId, symbol, name, action, price, sl, t1, t2, isScalp = false) {
   const sym = (symbol || '').replace('.NS', '');
   _qoPrice = price || 0;
   _qoSl = sl || 0;
+  _qoIsScalp = isScalp;
 
   const titleEl = document.getElementById('qo_title');
   if (titleEl) titleEl.textContent = `${action === 'BUY' ? '🟢 BUY' : '🔴 SELL'} Paper Order`;
@@ -807,6 +898,7 @@ async function submitQuickOrder() {
         symbol, company_name: name, action, entry_price: price,
         quantity: qty, stop_loss: sl, target1: t1, target2: t2,
         signal_id: cleanSignalId,
+        is_scalp: _qoIsScalp,
       }),
     });
     const data = await res.json();
@@ -1044,7 +1136,7 @@ async function quickClosePosition(symbol) {
 }
 
 // Live-price Paper BUY — fetches fresh CMP at click time
-async function liveQuickPaperBuy(btn, sigId, symbol, name, stopLoss, target1, target2) {
+async function liveQuickPaperBuy(btn, sigId, symbol, name, stopLoss, target1, target2, isScalp = false) {
   btn.disabled = true;
   btn.textContent = '⏳ Fetching CMP…';
   try {
@@ -1058,7 +1150,7 @@ async function liveQuickPaperBuy(btn, sigId, symbol, name, stopLoss, target1, ta
     if (cmpEl) cmpEl.textContent = '₹' + livePrice.toFixed(2);
     btn.textContent = '📝 Paper BUY';
     btn.disabled = false;
-    quickPaperBuy(btn, sigId, symbol, name, livePrice, stopLoss, target1, target2);
+    quickPaperBuy(btn, sigId, symbol, name, livePrice, stopLoss, target1, target2, isScalp);
   } catch (e) {
     btn.textContent = '📝 Paper BUY';
     btn.disabled = false;
@@ -1067,7 +1159,7 @@ async function liveQuickPaperBuy(btn, sigId, symbol, name, stopLoss, target1, ta
 }
 
 // Live-price Paper SELL — fetches fresh CMP at click time
-async function liveQuickPaperSell(btn, sigId, symbol, name, stopLoss, target1, target2) {
+async function liveQuickPaperSell(btn, sigId, symbol, name, stopLoss, target1, target2, isScalp = false) {
   btn.disabled = true;
   btn.textContent = '⏳ Fetching CMP…';
   try {
@@ -1080,7 +1172,7 @@ async function liveQuickPaperSell(btn, sigId, symbol, name, stopLoss, target1, t
     if (cmpEl) cmpEl.textContent = '₹' + livePrice.toFixed(2);
     btn.textContent = '📝 Paper SELL';
     btn.disabled = false;
-    quickPaperSell(btn, sigId, symbol, name, livePrice, stopLoss, target1, target2);
+    quickPaperSell(btn, sigId, symbol, name, livePrice, stopLoss, target1, target2, isScalp);
   } catch (e) {
     btn.textContent = '📝 Paper SELL';
     btn.disabled = false;
@@ -1510,3 +1602,206 @@ function showMtError(msg) {
   el.textContent = 'Warning: ' + msg;
   el.style.display = 'block';
 }
+
+// ─────────────────────── SAAS PASS & BROKER FUNCTIONS ───────────────────────
+
+function openPassModal() {
+  const el = document.getElementById('saasPassOverlay');
+  if (el) el.style.display = 'flex';
+}
+
+function closePassModal() {
+  const el = document.getElementById('saasPassOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function openBrokerModal() {
+  const el = document.getElementById('brokerConnectOverlay');
+  if (el) el.style.display = 'flex';
+}
+
+function closeBrokerModal() {
+  const el = document.getElementById('brokerConnectOverlay');
+  if (el) el.style.display = 'none';
+}
+
+function selectPassPlan(planId, price) {
+  showToast(`🎁 You are in 30-Day Free Trial! ${planId.toUpperCase()} Pass (Rs.${price}) will activate post-trial.`, 'success');
+  closePassModal();
+}
+
+function trackBrokerClick(brokerName) {
+  showToast(`Redirecting to ${brokerName} Partner Portal for Free Instant Alerts unlock...`, 'info');
+}
+
+// ══════════════════════════════════════════════════
+//  GOOGLE LOGIN & USER SESSION
+// ══════════════════════════════════════════════════
+
+const SS_USER_KEY  = 'ss_user';
+const SS_TRIAL_KEY = 'ss_trial';
+
+/** Called on every page load — check if user already logged in */
+function initAuthSession() {
+  const stored = localStorage.getItem(SS_USER_KEY);
+  if (stored) {
+    try {
+      const u = JSON.parse(stored);
+      applySession(u.user, u.trial);
+      return; // already logged in — skip modal
+    } catch(e) { localStorage.removeItem(SS_USER_KEY); }
+  }
+  // Show login modal
+  showLoginModal();
+}
+
+function showLoginModal() {
+  const overlay = document.getElementById('loginOverlay');
+  if (!overlay) return;
+  overlay.style.opacity = '1';
+  overlay.style.pointerEvents = 'all';
+  const modal = document.getElementById('loginModal');
+  if (modal) modal.style.transform = 'translateY(0) scale(1)';
+}
+
+function hideLoginModal() {
+  const overlay = document.getElementById('loginOverlay');
+  if (overlay) { overlay.style.opacity = '0'; overlay.style.pointerEvents = 'none'; }
+}
+
+/**
+ * startGoogleLogin() — Triggers Google Sign-In popup.
+ * We use Google Identity Services (accounts.google.com/gsi/client).
+ * For now we simulate with a clean custom popup until Google Client ID is set.
+ */
+function startGoogleLogin() {
+  const googleClientId = window.GOOGLE_CLIENT_ID || '';
+
+  if (googleClientId && window.google && google.accounts) {
+    // Real Google One-Tap
+    google.accounts.id.initialize({
+      client_id: googleClientId,
+      callback: handleGoogleCredential,
+    });
+    google.accounts.id.prompt();
+  } else {
+    // Demo mode: simulate login for testing
+    _simulateDemoLogin();
+  }
+}
+
+function handleGoogleCredential(response) {
+  // Decode JWT from Google
+  try {
+    const parts   = response.credential.split('.');
+    const payload = JSON.parse(atob(parts[1]));
+    _doBackendLogin({
+      google_id: payload.sub,
+      email:     payload.email,
+      name:      payload.name || payload.email,
+      picture:   payload.picture || '',
+    });
+  } catch(e) {
+    showToast('Google Login failed. Please try again.', 'error');
+  }
+}
+
+async function _doBackendLogin(profile) {
+  try {
+    const res = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile),
+    });
+    const data = await res.json();
+    if (data.success) {
+      localStorage.setItem(SS_USER_KEY, JSON.stringify(data));
+      applySession(data.user, data.trial);
+      hideLoginModal();
+      showToast(`Welcome ${data.user.name.split(' ')[0]}! Your 30-Day Free Trial is Active!`, 'success');
+    }
+  } catch(e) {
+    showToast('Login error: ' + e.message, 'error');
+  }
+}
+
+/** Demo simulate for testing (no real Google OAuth yet) */
+function _simulateDemoLogin() {
+  const mockUser = {
+    google_id: 'demo_' + Date.now(),
+    email: 'demo@stockssense.ai',
+    name: 'Demo User',
+    picture: '',
+  };
+  _doBackendLogin(mockUser);
+}
+
+function applySession(user, trial) {
+  // Show user badge
+  const badge = document.getElementById('userSessionBadge');
+  if (badge) badge.style.display = 'block';
+
+  // Set avatar / initial
+  const avatar  = document.getElementById('userAvatar');
+  const initial = document.getElementById('userInitial');
+  const firstName = (user.name || user.email || 'U').split(' ')[0];
+  if (user.picture && avatar) {
+    avatar.src = user.picture;
+    avatar.style.display = 'block';
+    if (initial) initial.style.display = 'none';
+  } else if (initial) {
+    initial.textContent = firstName[0].toUpperCase();
+  }
+
+  // Greeting
+  const greetEl = document.getElementById('userGreeting');
+  if (greetEl) greetEl.textContent = 'Hi ' + firstName + '!';
+
+  // Trial countdown
+  const countEl = document.getElementById('trialCountdown');
+  if (countEl) {
+    if (trial.has_pass) {
+      countEl.textContent = '💳 ' + trial.active_pass + ' Active';
+      countEl.style.color = '#a78bfa';
+    } else if (trial.trial_active) {
+      countEl.textContent = '⏳ ' + trial.days_left + ' days free left';
+      countEl.style.color = trial.days_left <= 7 ? '#fbbf24' : '#00ff88';
+    } else {
+      countEl.textContent = '🔒 Trial Expired';
+      countEl.style.color = '#ff4d6d';
+    }
+  }
+
+  // Set email in dropdown
+  const menuEmail = document.getElementById('menuEmail');
+  if (menuEmail) menuEmail.textContent = user.email;
+}
+
+function toggleUserMenu() {
+  const menu = document.getElementById('userMenu');
+  if (!menu) return;
+  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+}
+
+// Close user menu on outside click
+document.addEventListener('click', (e) => {
+  const badge = document.getElementById('userSessionBadge');
+  const menu  = document.getElementById('userMenu');
+  if (badge && menu && !badge.contains(e.target)) {
+    menu.style.display = 'none';
+  }
+});
+
+function handleLogout() {
+  localStorage.removeItem(SS_USER_KEY);
+  localStorage.removeItem(SS_TRIAL_KEY);
+  const badge = document.getElementById('userSessionBadge');
+  if (badge) badge.style.display = 'none';
+  showLoginModal();
+  showToast('Signed out successfully.', 'info');
+}
+
+// Initialize auth on page load
+window.addEventListener('DOMContentLoaded', () => {
+  setTimeout(initAuthSession, 500); // Small delay so page renders first
+});

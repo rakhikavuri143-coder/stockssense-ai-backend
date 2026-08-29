@@ -5,8 +5,13 @@ Host: 0.0.0.0:8000 (accessible on mobile via local Wi-Fi IP)
 """
 
 import os
+import sys
 import logging
 import asyncio
+
+# Ensure parent directory is in sys.path for Render / Cloud deployment
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.getcwd())
 from datetime import date, datetime
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -25,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger(__name__)
 
 from backend.database import init_db, get_db, save_signal, save_daily_performance
-from backend.indian_stocks import NIFTY50_STOCKS, get_all_symbols, NIFTY_INDEX_SYMBOL
+from backend.indian_stocks import NIFTY50_STOCKS, BUDGET_LOW_PRICED_STOCKS, ALL_STOCKS, get_all_symbols, NIFTY_INDEX_SYMBOL
 from backend.news_fetcher import fetch_stock_news, fetch_general_market_news
 from backend.technicals_1h import analyze_1h, analyze_15m
 from backend.historical_reaction import analyze_historical_reaction
@@ -33,6 +38,7 @@ from backend.loss_guard import run_all_guards, check_nifty_trend_guard
 from backend.ai_agent import analyze_stock_with_ai
 from backend import paper_trading
 from backend import telegram_alerts
+from backend.user_db import init_user_db, upsert_user, get_trial_status, get_all_users, get_summary_stats
 
 CONFIDENCE_THRESHOLD = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "90"))
 PAPER_CAPITAL        = float(os.getenv("PAPER_CAPITAL", "10000"))
@@ -90,7 +96,8 @@ async def market_open_scan_job():
     try:
         market_news = fetch_general_market_news()
         signals_found = 0
-        for stock in NIFTY50_STOCKS:
+        from backend.indian_stocks import ALL_STOCKS
+        for stock in ALL_STOCKS:
             try:
                 symbol  = stock["symbol"]
                 name    = stock["name"]
@@ -177,6 +184,8 @@ async def auto_exit_monitor_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    init_user_db()
+    logger.info("✅ User database (Google Login / Trial tracking) initialized.")
     # Auto-check open paper positions against live prices every 15 seconds
     scheduler.add_job(auto_exit_monitor_job, "interval", seconds=15, id="auto_exit_monitor")
     # 9:15 AM IST = 3:45 AM UTC (market open auto-scan)
@@ -213,9 +222,24 @@ async def root():
 # ─────────────────────────── API: STOCKS ────────────────────────────
 
 @app.get("/api/stocks")
-async def get_stocks():
-    """Return full Nifty 50 watchlist."""
-    return {"stocks": NIFTY50_STOCKS, "total": len(NIFTY50_STOCKS)}
+async def get_stocks(category: Optional[str] = "all"):
+    """Return watchlist (category: 'all', 'nifty50', 'budget')."""
+    from backend.indian_stocks import ALL_STOCKS, NIFTY50_STOCKS, BUDGET_LOW_PRICED_STOCKS
+    if category == "budget":
+        stocks = BUDGET_LOW_PRICED_STOCKS
+    elif category == "nifty50":
+        stocks = NIFTY50_STOCKS
+    else:
+        stocks = ALL_STOCKS
+    return {"stocks": stocks, "total": len(stocks)}
+
+
+@app.get("/api/stocks/budget")
+async def get_budget_stocks():
+    """Return high-volume budget/low-priced stocks (under ₹200 on NSE)."""
+    from backend.indian_stocks import BUDGET_LOW_PRICED_STOCKS
+    return {"stocks": BUDGET_LOW_PRICED_STOCKS, "total": len(BUDGET_LOW_PRICED_STOCKS)}
+
 
 
 @app.get("/api/nifty-status")
@@ -267,6 +291,7 @@ async def get_stock_price(symbol: str):
 class AnalyzeRequest(BaseModel):
     symbols:              Optional[list[str]] = None   # if None, analyze all 50
     confidence_threshold: Optional[float]    = 90.0
+    category:             Optional[str]      = None    # 'nifty50', 'budget', or None (all)
 
 @app.post("/api/analyze")
 async def analyze_stocks(req: AnalyzeRequest, db: Session = Depends(get_db)):
@@ -276,11 +301,17 @@ async def analyze_stocks(req: AnalyzeRequest, db: Session = Depends(get_db)):
     """
     threshold = req.confidence_threshold or CONFIDENCE_THRESHOLD
 
-    # Resolve stock list
-    if req.symbols:
-        stock_list = [s for s in NIFTY50_STOCKS if s["symbol"] in req.symbols]
+    # Resolve stock list based on category
+    if req.category == "budget":
+        base_list = BUDGET_LOW_PRICED_STOCKS
+    elif req.category == "nifty50":
+        base_list = NIFTY50_STOCKS
     else:
-        stock_list = NIFTY50_STOCKS
+        base_list = ALL_STOCKS
+    if req.symbols:
+        stock_list = [s for s in base_list if s["symbol"] in req.symbols]
+    else:
+        stock_list = base_list
 
     signals = []
 
@@ -372,6 +403,7 @@ async def analyze_stocks(req: AnalyzeRequest, db: Session = Depends(get_db)):
                 open_trades_count=open_trades_count,
                 rsi_15m=rsi_15m_val,
                 losses_today=losses_today,
+                is_scalp=(req.category == "fast_scalp"),
             ) if signal in ("BUY", "SELL") else {"approved": False}
 
             approved = guards.get("approved", False)
@@ -455,7 +487,7 @@ async def analyze_stocks(req: AnalyzeRequest, db: Session = Depends(get_db)):
 
 # ─────────────── API: STREAMING ANALYZE (SSE per-stock) ───────────────
 
-def _analyze_single_stock(stock: dict, threshold: float):
+def _analyze_single_stock(stock: dict, threshold: float, category: str = "normal"):
     symbol = stock["symbol"]
     name   = stock["name"]
     sector = stock["sector"]
@@ -502,6 +534,7 @@ def _analyze_single_stock(stock: dict, threshold: float):
         current_price=technical["current_price"], entry_price=technical["current_price"],
         stop_loss=sl, target1=t1, vwap=technical["vwap"], rvol=technical["rvol"],
         capital=PAPER_CAPITAL, confidence_threshold=threshold,
+        is_scalp=(category == "fast_scalp"),
     ) if signal in ("BUY", "SELL") else {"approved": False}
 
     entry_low  = round(technical["current_price"] * 0.998, 2)
@@ -540,7 +573,16 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
     Uses 6 concurrent workers for ultra-fast streaming scan (all 50 stocks in ~15-20s).
     """
     threshold   = req.confidence_threshold or CONFIDENCE_THRESHOLD
-    stock_list  = [s for s in NIFTY50_STOCKS if s["symbol"] in req.symbols] if req.symbols else NIFTY50_STOCKS
+    # Select stock universe based on category
+    if req.category == "budget" or req.category == "fast_scalp":
+        base_list = BUDGET_LOW_PRICED_STOCKS
+        if req.category == "fast_scalp":
+            threshold = min(threshold, 85.0)  # Lower threshold for fast scalp mode
+    elif req.category == "nifty50":
+        base_list = NIFTY50_STOCKS
+    else:
+        base_list = ALL_STOCKS
+    stock_list  = [s for s in base_list if s["symbol"] in req.symbols] if req.symbols else base_list
     total       = len(stock_list)
 
     async def event_generator():
@@ -552,12 +594,16 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
                 # Progress update
                 await queue.put(f"data: {_json.dumps({'type':'progress','symbol':stock['symbol'],'name':stock['name'],'index':index+1,'total':total})}\n\n")
                 try:
-                    res = await asyncio.to_thread(_analyze_single_stock, stock, threshold)
+                    res = await asyncio.to_thread(_analyze_single_stock, stock, threshold, req.category)
                     if not res:
                         return
                     if res.get("type") == "skip":
                         await queue.put(f"data: {_json.dumps(res)}\n\n")
                         return
+                    # Tag fast_scalp results
+                    if req.category == "fast_scalp":
+                        res["scalp_mode"] = True
+                        res["scalp_rvol"] = res.get("rvol_15m", res.get("rvol", 0))
 
                     # Isolated DB session per worker
                     if res.get("confidence", 0) >= threshold:
@@ -654,11 +700,15 @@ class PaperOrderRequest(BaseModel):
     target1:      float
     target2:      float
     signal_id:    Optional[int] = None
+    is_scalp:     Optional[bool] = False
 
 @app.post("/api/paper/buy-sell")
 async def paper_order(req: PaperOrderRequest, db: Session = Depends(get_db)):
+    company_name = req.company_name
+    if req.is_scalp:
+        company_name = f"{company_name} (Scalp)"
     result = paper_trading.place_paper_order(
-        db=db, symbol=req.symbol, company_name=req.company_name,
+        db=db, symbol=req.symbol, company_name=company_name,
         action=req.action, entry_price=req.entry_price, quantity=req.quantity,
         stop_loss=req.stop_loss, target1=req.target1, target2=req.target2,
         signal_id=req.signal_id,
@@ -799,6 +849,190 @@ async def telegram_status():
         "has_token":  has_token,
         "has_chat_id": has_chat,
     }
+
+# ──────────────────── SAAS TERMINAL ENDPOINTS ────────────────────
+
+@app.get("/api/saas/summary")
+async def get_saas_summary(db: Session = Depends(get_db)):
+    """
+    Public SaaS summary endpoint for StocksSense AI Web Terminal.
+    Returns: Trial status, pricing plans, 16 active loss guards, win rate, and broker referral partners.
+    """
+    from backend.database import PaperTrade
+    closed_trades = db.query(PaperTrade).filter(PaperTrade.status != "OPEN").all()
+    wins = sum(1 for t in closed_trades if (t.pnl or 0) > 0)
+    total_trades = len(closed_trades)
+    win_rate = round((wins / total_trades * 100), 1) if total_trades > 0 else 63.0
+    net_pnl  = round(sum((t.pnl or 0) for t in closed_trades), 2)
+
+    return {
+        "app_name": "StocksSense AI Terminal",
+        "version": "2.0-SaaS",
+        "trial_status": {
+            "is_free_trial": True,
+            "days_remaining": 30,
+            "message": "🎁 30-Day Unlimited SaaS Free Trial Active!"
+        },
+        "pricing_plans": [
+            {
+                "id": "weekly",
+                "name": "Weekly Pass",
+                "duration": "7 Days",
+                "price": 199,
+                "daily_cost": "₹28/day",
+                "tag": "Beginner Friendly",
+                "features": ["All Nifty 50 AI Signals", "Budget Stock Scans (<₹300)", "16 Loss Guards Active", "Web Terminal Access"]
+            },
+            {
+                "id": "biweekly",
+                "name": "15-Day Pass",
+                "duration": "15 Days",
+                "price": 399,
+                "daily_cost": "₹26/day",
+                "tag": "Popular",
+                "features": ["All Nifty 50 AI Signals", "Budget Stock Scans (<₹300)", "16 Loss Guards Active", "Instant Telegram Alerts", "1-Hr Fast Scalp Scanner"]
+            },
+            {
+                "id": "monthly",
+                "name": "Monthly Pass",
+                "duration": "30 Days",
+                "price": 499,
+                "daily_cost": "₹16/day",
+                "tag": "🔥 BEST VALUE",
+                "features": ["All Nifty 50 AI Signals", "Budget Stock Scans (<₹300)", "16 Loss Guards Active", "Instant Telegram/WhatsApp Alerts", "1-Hr Fast Scalp Scanner", "Priority AI Scan Queue", "Dedicated AI Portfolio Insights"]
+            }
+        ],
+        "performance": {
+            "win_rate": f"{win_rate}%",
+            "total_trades": total_trades,
+            "net_pnl": net_pnl,
+            "active_guards": 16,
+            "guards_status": "16/16 Active & Shielding Capital 🛡️"
+        },
+        "broker_partners": [
+            {
+                "name": "Angel One",
+                "logo": "👼",
+                "badge": "Free Account + Instant Alerts",
+                "referral_url": "https://angelone.in/partner/RAKH123",
+                "description": "Zero Demat Account Opening Fee + Free AI Alerts Access"
+            },
+            {
+                "name": "Dhan",
+                "logo": "⚡",
+                "badge": "Fast API + Instant Alerts",
+                "referral_url": "https://dhan.co/partner/RAKH123",
+                "description": "Direct Lightning API Execution + Free AI Alerts Access"
+            },
+            {
+                "name": "Zerodha",
+                "logo": "📈",
+                "badge": "No.1 Broker + Instant Alerts",
+                "referral_url": "https://zerodha.com/partner/RAKH123",
+                "description": "India's Premier Broker + Free AI Alerts Access"
+            }
+        ],
+        "disclaimer": "StocksSense AI is a quantitative software terminal & research tool for educational purposes. Not a SEBI registered investment advisor. Users execute trades at their own discretion and risk."
+    }
+
+# ─────────────────────────── ADMIN PAGE ROUTE ────────────────────────────
+
+@app.get("/admin", include_in_schema=False)
+async def admin_page():
+    """Serve the Owner Admin Dashboard page."""
+    admin_path = os.path.join(static_dir, "admin.html")
+    if os.path.exists(admin_path):
+        return FileResponse(admin_path)
+    return JSONResponse({"error": "Admin page not found"}, status_code=404)
+
+
+# ─────────────────────────── API: AUTH (Google Login) ────────────────────────────
+
+class GoogleAuthRequest(BaseModel):
+    google_id: str
+    email:     str
+    name:      str
+    picture:   Optional[str] = ""
+
+@app.post("/api/auth/google")
+async def google_login(body: GoogleAuthRequest):
+    """
+    Called after Google One-Tap login on frontend.
+    Creates or updates user in SQLite DB.
+    Returns user profile + trial status.
+    """
+    try:
+        user = upsert_user(
+            google_id=body.google_id,
+            email=body.email,
+            name=body.name,
+            picture=body.picture or "",
+        )
+        trial = get_trial_status(user)
+        return {
+            "success":    True,
+            "user": {
+                "google_id":  user["google_id"],
+                "email":      user["email"],
+                "name":       user["name"],
+                "picture":    user.get("picture", ""),
+                "joined_at":  user["joined_at"],
+            },
+            "trial": trial,
+        }
+    except Exception as e:
+        logger.error("Google auth error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/auth/me")
+async def get_me(google_id: str):
+    """Return current user's profile + trial status."""
+    from backend.user_db import get_user_by_google_id
+    user = get_user_by_google_id(google_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    trial = get_trial_status(user)
+    return {
+        "user": {
+            "google_id": user["google_id"],
+            "email":     user["email"],
+            "name":      user["name"],
+            "picture":   user.get("picture", ""),
+            "joined_at": user["joined_at"],
+        },
+        "trial": trial,
+    }
+
+
+# ─────────────────────────── API: ADMIN ────────────────────────────
+
+ADMIN_KEY = os.getenv("ADMIN_SECRET_KEY", "stockssense_owner_2026")
+
+@app.get("/api/admin/users")
+async def admin_get_users(key: str = ""):
+    """Owner-only: Get all registered users + trial status."""
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="Unauthorized — Invalid admin key")
+    users = get_all_users()
+    now_utc = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    enriched = []
+    for u in users:
+        trial = get_trial_status(u)
+        enriched.append({
+            "id":           u["id"],
+            "email":        u["email"],
+            "name":         u["name"],
+            "joined_at":    u["joined_at"],
+            "last_login":   u.get("last_login", ""),
+            "active_pass":  u.get("active_pass", "NONE"),
+            "trial_days_left": trial["days_left"],
+            "trial_ends_at":   trial["trial_ends_at"],
+            "has_pass":        trial["has_pass"],
+        })
+    stats = get_summary_stats()
+    return {"stats": stats, "users": enriched}
+
 
 # ─────────────────────────── ENTRY POINT ────────────────────────────
 

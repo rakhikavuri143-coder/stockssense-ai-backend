@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>StocksSense AI — Owner Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0a0f1e;
+    --card: #111827;
+    --border: rgba(139,92,246,0.25);
+    --purple: #7c3aed;
+    --purple-light: #a78bfa;
+    --green: #00ff88;
+    --red: #ff4d6d;
+    --yellow: #fbbf24;
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --dim: #475569;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+  }
+
+  /* ─── LOGIN GATE ─── */
+  #loginGate {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+  }
+  .login-card {
+    background: linear-gradient(145deg, #111827, #1a1230);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 2.5rem;
+    width: min(400px, 94vw);
+    text-align: center;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.6), 0 0 40px rgba(124,58,237,0.15);
+  }
+  .login-card h1 { font-size: 1.5rem; font-weight: 800; color: var(--purple-light); margin-bottom: 0.35rem; }
+  .login-card p  { font-size: 0.85rem; color: var(--muted); margin-bottom: 1.75rem; }
+  .key-input {
+    width: 100%; padding: 0.75rem 1rem;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: 1rem;
+    outline: none;
+    margin-bottom: 1rem;
+    text-align: center;
+    letter-spacing: 0.08em;
+  }
+  .key-input:focus { border-color: var(--purple); }
+  .btn-login {
+    width: 100%; padding: 0.8rem;
+    background: linear-gradient(135deg, #7c3aed, #4f46e5);
+    border: none; border-radius: 10px;
+    color: #fff; font-size: 1rem; font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(124,58,237,0.45);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .btn-login:hover { transform: translateY(-2px); box-shadow: 0 8px 32px rgba(124,58,237,0.6); }
+  .login-err { color: var(--red); font-size: 0.82rem; margin-top: 0.6rem; display: none; }
+
+  /* ─── HEADER ─── */
+  #adminApp { display: none; }
+  .admin-header {
+    background: linear-gradient(90deg, #0d1330, #150e28);
+    border-bottom: 1px solid var(--border);
+    padding: 1rem 1.5rem;
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .admin-brand { display: flex; align-items: center; gap: 0.75rem; }
+  .admin-brand span { font-size: 1.3rem; font-weight: 800; color: var(--purple-light); }
+  .admin-brand small { font-size: 0.75rem; color: var(--muted); display: block; }
+  .badge-owner {
+    background: linear-gradient(90deg, #7c3aed, #4f46e5);
+    color: #fff; font-size: 0.7rem; font-weight: 700;
+    border-radius: 20px; padding: 0.2rem 0.75rem;
+    letter-spacing: 0.05em;
+  }
+  .btn-refresh {
+    background: rgba(124,58,237,0.15);
+    border: 1px solid var(--border);
+    color: var(--purple-light);
+    border-radius: 8px; padding: 0.45rem 1rem;
+    font-size: 0.82rem; font-weight: 600;
+    cursor: pointer; transition: 0.15s;
+  }
+  .btn-refresh:hover { background: rgba(124,58,237,0.3); }
+
+  /* ─── CONTENT ─── */
+  .admin-content { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+
+  /* ─── STAT CARDS ─── */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.75rem;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.25rem 1.1rem;
+    text-align: center;
+    transition: transform 0.15s;
+  }
+  .stat-card:hover { transform: translateY(-2px); }
+  .stat-icon { font-size: 1.6rem; margin-bottom: 0.4rem; }
+  .stat-val { font-size: 2rem; font-weight: 800; color: var(--purple-light); }
+  .stat-label { font-size: 0.75rem; color: var(--muted); margin-top: 0.2rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* ─── SECTION ─── */
+  .section-title {
+    font-size: 1rem; font-weight: 700; color: var(--text);
+    margin-bottom: 0.85rem;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .section-title .count {
+    background: rgba(124,58,237,0.2);
+    color: var(--purple-light);
+    font-size: 0.75rem; font-weight: 700;
+    border-radius: 20px; padding: 0.15rem 0.6rem;
+  }
+
+  /* ─── TABLE ─── */
+  .table-wrap {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; min-width: 700px; }
+  thead { background: rgba(124,58,237,0.12); }
+  th {
+    padding: 0.8rem 1rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--purple-light);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    text-align: left;
+    white-space: nowrap;
+  }
+  td {
+    padding: 0.85rem 1rem;
+    font-size: 0.83rem;
+    color: var(--text);
+    border-top: 1px solid rgba(255,255,255,0.05);
+    vertical-align: middle;
+  }
+  tr:hover td { background: rgba(124,58,237,0.05); }
+
+  .badge {
+    display: inline-block;
+    border-radius: 20px;
+    padding: 0.2rem 0.65rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .badge-trial   { background: rgba(251,191,36,0.15);  color: var(--yellow); }
+  .badge-active  { background: rgba(0,255,136,0.12);   color: var(--green); }
+  .badge-expired { background: rgba(255,77,109,0.12);  color: var(--red); }
+  .badge-paid    { background: rgba(124,58,237,0.2);   color: var(--purple-light); }
+
+  .avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: linear-gradient(135deg, #7c3aed, #4f46e5);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 0.85rem; font-weight: 700; color: #fff;
+    flex-shrink: 0;
+  }
+  .user-cell { display: flex; align-items: center; gap: 0.6rem; }
+  .user-info .name  { font-weight: 600; color: var(--text); font-size: 0.85rem; }
+  .user-info .email { font-size: 0.72rem; color: var(--muted); }
+
+  .days-left { font-weight: 700; }
+  .days-ok   { color: var(--green); }
+  .days-warn { color: var(--yellow); }
+  .days-dead { color: var(--red); }
+
+  /* ─── EMPTY ─── */
+  .empty-state {
+    text-align: center; padding: 3rem; color: var(--muted); font-size: 0.9rem;
+  }
+
+  /* ─── FOOTER ─── */
+  .admin-footer {
+    text-align: center; padding: 1.5rem;
+    font-size: 0.72rem; color: var(--dim);
+  }
+
+  @media (max-width: 600px) {
+    .admin-content { padding: 0.75rem; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ─── LOGIN GATE ─── -->
+<div id="loginGate">
+  <div class="login-card">
+    <div style="font-size:2.5rem;margin-bottom:0.75rem">👑</div>
+    <h1>StocksSense AI</h1>
+    <p>Owner Admin Dashboard<br><span style="color:#7c3aed">Enter your secret admin key to continue</span></p>
+    <input id="adminKeyInput" class="key-input" type="password" placeholder="Admin Secret Key" autocomplete="off"/>
+    <button class="btn-login" onclick="doLogin()">🔓 Enter Admin Dashboard</button>
+    <div id="loginErr" class="login-err">❌ Invalid admin key. Access denied.</div>
+  </div>
+</div>
+
+<!-- ─── ADMIN APP ─── -->
+<div id="adminApp">
+
+  <header class="admin-header">
+    <div class="admin-brand">
+      <div>
+        <span>👑 StocksSense AI</span>
+        <small>Owner Admin Dashboard</small>
+      </div>
+      <div class="badge-owner">OWNER ACCESS</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0.75rem">
+      <span id="lastRefreshed" style="font-size:0.72rem;color:#475569"></span>
+      <button class="btn-refresh" onclick="loadData()">⟳ Refresh</button>
+    </div>
+  </header>
+
+  <main class="admin-content">
+
+    <!-- Stats -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-card">
+        <div class="stat-icon">👥</div>
+        <div class="stat-val" id="statTotal">—</div>
+        <div class="stat-label">Total Users</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🆕</div>
+        <div class="stat-val" id="statToday">—</div>
+        <div class="stat-label">Joined Today</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">📅</div>
+        <div class="stat-val" id="statWeek">—</div>
+        <div class="stat-label">This Week</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">💳</div>
+        <div class="stat-val" id="statPaid">—</div>
+        <div class="stat-label">Paid Users</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-val" id="statExpiring">—</div>
+        <div class="stat-label">Trial Expiring (5d)</div>
+      </div>
+    </div>
+
+    <!-- Users Table -->
+    <div class="section-title">
+      👤 Registered Users
+      <span class="count" id="userCount">0</span>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>User</th>
+            <th>Joined</th>
+            <th>Last Login</th>
+            <th>Trial Status</th>
+            <th>Days Left</th>
+            <th>Pass</th>
+          </tr>
+        </thead>
+        <tbody id="usersBody">
+          <tr><td colspan="7" class="empty-state">Loading users...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </main>
+
+  <footer class="admin-footer">
+    © 2026 StocksSense AI — Owner Dashboard — All data is private &amp; confidential.
+  </footer>
+
+</div>
+
+<script>
+  let ADMIN_KEY = "";
+
+  function doLogin() {
+    const k = document.getElementById("adminKeyInput").value.trim();
+    if (!k) return;
+    ADMIN_KEY = k;
+    loadData();
+  }
+
+  document.getElementById("adminKeyInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doLogin();
+  });
+
+  async function loadData() {
+    const err = document.getElementById("loginErr");
+    err.style.display = "none";
+    try {
+      const resp = await fetch(`/api/admin/users?key=${encodeURIComponent(ADMIN_KEY)}`);
+      if (resp.status === 403) {
+        err.style.display = "block";
+        return;
+      }
+      const data = await resp.json();
+
+      // Show app
+      document.getElementById("loginGate").style.display = "none";
+      document.getElementById("adminApp").style.display  = "block";
+
+      // Stats
+      const s = data.stats || {};
+      document.getElementById("statTotal").textContent    = s.total_users       ?? 0;
+      document.getElementById("statToday").textContent    = s.today_joined       ?? 0;
+      document.getElementById("statWeek").textContent     = s.week_joined        ?? 0;
+      document.getElementById("statPaid").textContent     = s.paid_users         ?? 0;
+      document.getElementById("statExpiring").textContent = s.trial_expiring_soon ?? 0;
+
+      // Users table
+      const users = data.users || [];
+      document.getElementById("userCount").textContent = users.length;
+      const tbody = document.getElementById("usersBody");
+
+      if (users.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="empty-state">🙁 No users registered yet. Share your link!</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = users.map((u, i) => {
+        const initial = (u.name || u.email || "?")[0].toUpperCase();
+        const joined  = fmtDate(u.joined_at);
+        const lastLogin = u.last_login ? fmtDate(u.last_login) : "—";
+        const days = u.trial_days_left ?? 0;
+        const expired = days <= 0 && !u.has_pass;
+
+        let trialBadge, daysClass;
+        if (u.has_pass) {
+          trialBadge = `<span class="badge badge-paid">PASS ACTIVE</span>`;
+          daysClass  = "days-ok";
+        } else if (expired) {
+          trialBadge = `<span class="badge badge-expired">EXPIRED</span>`;
+          daysClass  = "days-dead";
+        } else if (days <= 7) {
+          trialBadge = `<span class="badge badge-trial">⚠️ EXPIRING</span>`;
+          daysClass  = "days-warn";
+        } else {
+          trialBadge = `<span class="badge badge-active">TRIAL ACTIVE</span>`;
+          daysClass  = "days-ok";
+        }
+
+        const passBadge = u.has_pass
+          ? `<span class="badge badge-paid">${u.active_pass}</span>`
+          : `<span style="color:#475569;font-size:0.75rem">No Pass</span>`;
+
+        return `<tr>
+          <td style="color:#475569">${i + 1}</td>
+          <td>
+            <div class="user-cell">
+              <div class="avatar">${initial}</div>
+              <div class="user-info">
+                <div class="name">${u.name || "—"}</div>
+                <div class="email">${u.email}</div>
+              </div>
+            </div>
+          </td>
+          <td style="color:#94a3b8;font-size:0.78rem">${joined}</td>
+          <td style="color:#94a3b8;font-size:0.78rem">${lastLogin}</td>
+          <td>${trialBadge}</td>
+          <td><span class="days-left ${daysClass}">${expired ? "0" : days}d</span></td>
+          <td>${passBadge}</td>
+        </tr>`;
+      }).join("");
+
+      document.getElementById("lastRefreshed").textContent =
+        "Updated: " + new Date().toLocaleTimeString("en-IN");
+
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "—";
+    try {
+      return new Date(iso).toLocaleDateString("en-IN", {
+        day: "2-digit", month: "short", year: "numeric",
+        hour: "2-digit", minute: "2-digit"
+      });
+    } catch { return iso.slice(0, 10); }
+  }
+</script>
+
+</body>
+</html>
