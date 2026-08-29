@@ -10,11 +10,12 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 
-# DB file path — same directory as this file
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+# DB file path — store in data/ folder along with the main DB
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "users.db")
 
 
 def _get_conn():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
