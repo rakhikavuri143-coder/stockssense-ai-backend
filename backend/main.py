@@ -219,6 +219,12 @@ async def root():
     return FileResponse(os.path.join(static_dir, "index.html"))
 
 
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "timestamp": str(datetime.now())}
+
+
+
 # ─────────────────────────── API: STOCKS ────────────────────────────
 
 @app.get("/api/stocks")
