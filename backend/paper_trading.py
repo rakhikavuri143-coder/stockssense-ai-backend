@@ -308,7 +308,8 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
     budget_symbols  = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
     ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     current_time_str = ist_now.strftime("%H:%M")
-    is_eod_squareoff_time = current_time_str >= "15:25"
+    is_eod_squareoff_time = current_time_str >= "15:10"
+
 
     for symbol, pos in list(open_positions.items()):
         price = live_prices.get(symbol)
@@ -339,8 +340,9 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                         logger.info("⏱️ Scalp 1-Hour Timeout reached for %s. Closed position.", symbol)
                         continue
 
-        # EOD Auto-Squareoff at 3:25 PM IST
+        # EOD Auto-Squareoff at 3:10 PM IST
         if is_eod_squareoff_time:
+
             res = close_paper_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
             results.append(res)
             _peak_prices.pop(trade_id, None)

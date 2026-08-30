@@ -141,7 +141,8 @@ def alert_trade_closed(symbol: str, action: str, entry_price: float,
         "T1_HIT":             "🎯 ₹150 Profit Target Hit!",
         "T2_HIT":             "🎯🎯 Target 2 Hit!",
         "MANUAL":             "✋ Manual Exit",
-        "EOD_AUTO_SQUAREOFF": "⏰ EOD 3:25 PM Auto Close",
+        "EOD_AUTO_SQUAREOFF": "⏰ EOD 3:10 PM Auto Close",
+
         "PROFIT_RETREAT_LOCK":"💰 Trailing Profit Lock",
     }
     reason_text = reason_map.get(exit_reason, exit_reason)
