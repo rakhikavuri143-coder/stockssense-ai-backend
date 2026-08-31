@@ -1678,6 +1678,8 @@ async function initAuthSession() {
 function showLoginModal() {
   const overlay = document.getElementById('loginOverlay');
   if (!overlay) return;
+  overlay.style.display = 'flex';
+  overlay.offsetHeight; // force reflow
   overlay.style.opacity = '1';
   overlay.style.pointerEvents = 'all';
   const modal = document.getElementById('loginModal');
@@ -1686,8 +1688,17 @@ function showLoginModal() {
 
 function hideLoginModal() {
   const overlay = document.getElementById('loginOverlay');
-  if (overlay) { overlay.style.opacity = '0'; overlay.style.pointerEvents = 'none'; }
+  if (overlay) {
+    overlay.style.opacity = '0';
+    overlay.style.pointerEvents = 'none';
+    setTimeout(() => {
+      if (overlay.style.opacity === '0') {
+        overlay.style.display = 'none';
+      }
+    }, 300);
+  }
 }
+
 
 /**
  * startGoogleLogin() — Triggers Google Sign-In popup.
