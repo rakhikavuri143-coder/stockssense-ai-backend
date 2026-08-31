@@ -1391,20 +1391,32 @@ let _mtSymbol     = '';   // currently selected symbol
 let _mtSuggestions = {}; // SL/T1/T2 suggestions from API
 
 async function openManualTradeModal() {
-  // Load stock list if not yet loaded
+  // Show modal immediately
+  document.getElementById('manualTradeOverlay').classList.add('active');
+  showMtStep1();
+  setTimeout(() => {
+    const el = document.getElementById('mt_search');
+    if (el) el.focus();
+  }, 150);
+
+  // Load stock list in background if not yet loaded
   if (_mtAllStocks.length === 0) {
     try {
+      const grid = document.getElementById('mt_stock_grid');
+      if (grid) {
+        grid.innerHTML = '<div style="color:#7a8ba8;text-align:center;padding:1.5rem">Loading stocks list...</div>';
+      }
       const res  = await fetch('/api/stocks');
       const data = await res.json();
       _mtAllStocks = data.stocks || [];
-    } catch (e) { _mtAllStocks = []; }
+      renderStockPicker(_mtAllStocks);
+    } catch (e) {
+      _mtAllStocks = [];
+      renderStockPicker(_mtAllStocks);
+    }
   }
-
-  // Reset to Step 1
-  showMtStep1();
-  document.getElementById('manualTradeOverlay').classList.add('active');
-  setTimeout(() => document.getElementById('mt_search').focus(), 150);
 }
+
 
 function closeManualTradeModal() {
   document.getElementById('manualTradeOverlay').classList.remove('active');
