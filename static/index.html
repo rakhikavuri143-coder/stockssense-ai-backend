@@ -34,6 +34,11 @@
       </div>
     </div>
     <div class="header-actions">
+      <!-- Live / Paper Mode Toggle Switch -->
+      <div class="mode-toggle-wrap" style="display:flex;align-items:center;gap:0.4rem;background:rgba(255,255,255,0.05);padding:0.4rem 0.65rem;border-radius:10px;border:1px solid rgba(255,255,255,0.1)">
+        <label style="font-size:0.7rem;font-weight:800;color:#94a3b8;letter-spacing:0.5px;">TRADING MODE</label>
+        <button id="modeToggleBtn" onclick="toggleTradingMode()" style="background:#1e293b;border:1px solid #334155;color:#ffbd59;padding:0.3rem 0.65rem;border-radius:6px;font-size:0.72rem;font-weight:900;cursor:pointer;transition:all 0.2s;box-shadow:0 0 10px rgba(0,0,0,0.5)">📝 PAPER</button>
+      </div>
       <div class="confidence-slider-wrap">
         <label>Min Confidence</label>
         <input type="range" id="confidenceSlider" min="80" max="98" value="90" step="1" />

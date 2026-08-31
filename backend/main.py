@@ -163,7 +163,7 @@ async def midday_scan_job():
     await market_open_scan_job()
 
 async def auto_exit_monitor_job():
-    """Check live prices for open paper positions every 15s and auto-exit on SL/Target hit."""
+    """Check live prices for open paper & live positions every 15s and auto-exit on SL/Target hit."""
     def _fetch_prices(symbols):
         if not symbols:
             return {}
@@ -209,15 +209,35 @@ async def auto_exit_monitor_job():
     db_gen = get_db()
     db: Session = next(db_gen)
     try:
-        open_positions = paper_trading.get_open_positions(db)
-        if not open_positions:
-            return
-        symbols = list(open_positions.keys())
-        live_prices = await asyncio.to_thread(_fetch_prices, symbols)
+        from backend.database import get_open_live_trades
+        from backend import live_trading
 
-        exits = paper_trading.check_auto_exits(db, live_prices)
-        if exits:
-            logger.info("⚡ Auto-exited %d paper position(s): %s", len(exits), exits)
+        paper_positions = paper_trading.get_open_positions(db)
+        live_trades_list = get_open_live_trades(db)
+        
+        # If there are no open positions of either type, skip
+        if not paper_positions and not live_trades_list:
+            return
+            
+        # Collect unique symbols to fetch price once
+        symbols = set(paper_positions.keys())
+        for lt in live_trades_list:
+            symbols.add(lt.symbol)
+            
+        live_prices = await asyncio.to_thread(_fetch_prices, list(symbols))
+
+        # Check paper exits
+        if paper_positions:
+            paper_exits = paper_trading.check_auto_exits(db, live_prices)
+            if paper_exits:
+                logger.info("⚡ Auto-exited %d paper position(s): %s", len(paper_exits), paper_exits)
+
+        # Check live exits
+        if live_trades_list:
+            live_exits = live_trading.check_live_auto_exits(db, live_prices)
+            if live_exits:
+                logger.info("⚡ Auto-exited %d LIVE position(s): %s", len(live_exits), live_exits)
+
     except Exception as e:
         logger.error("Error in auto_exit_monitor_job: %s", e)
     finally:
@@ -830,17 +850,70 @@ async def manual_paper_order(req: ManualOrderRequest, db: Session = Depends(get_
     return result
 
 
+class LiveOrderRequest(BaseModel):
+    symbol:       str
+    company_name: str
+    action:       str
+    entry_price:  float
+    quantity:     int
+    stop_loss:    float
+    target1:      float
+    target2:      float
+    signal_id:    Optional[int] = None
+
+
+@app.post("/api/live/buy-sell")
+async def live_order(req: LiveOrderRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
+    from backend import live_trading
+    result = live_trading.place_live_order(
+        db=db, symbol=req.symbol, company_name=req.company_name,
+        action=req.action, entry_price=req.entry_price, quantity=req.quantity,
+        stop_loss=req.stop_loss, target1=req.target1, target2=req.target2,
+        signal_id=req.signal_id,
+    )
+    return result
+
+
+class LiveCloseRequest(BaseModel):
+    symbol:      str
+    exit_price:  float
+    exit_reason: Optional[str] = "MANUAL"
+
+
+@app.post("/api/live/close")
+async def close_live(req: LiveCloseRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
+    from backend import live_trading
+    result = live_trading.close_live_position(db, req.symbol, req.exit_price, req.exit_reason)
+    return result
+
+
+@app.get("/api/live/portfolio")
+async def get_live_portfolio(db: Session = Depends(get_db)):
+    from backend import live_trading
+    return live_trading.get_live_portfolio_summary(db)
+
+
+@app.get("/api/live/broker-status")
+async def get_live_broker_status():
+    from backend import live_trading
+    auth_data = live_trading.get_live_auth_data()
+    if auth_data:
+        return {"status": "connected", "client_code": auth_data.get("client_code")}
+    else:
+        return {"status": "disconnected", "message": "Broker not connected. Please set credentials in Render."}
+
+
 # ─────────────────────────── API: JOURNAL / ANALYTICS ────────────────────────────
 
 @app.get("/api/journal/weekly")
-async def weekly_summary(db: Session = Depends(get_db)):
+async def weekly_summary(mode: Optional[str] = "paper", db: Session = Depends(get_db)):
     from backend.database import get_weekly_summary
-    return get_weekly_summary(db)
+    return get_weekly_summary(db, mode)
 
 @app.get("/api/journal/monthly")
-async def monthly_summary(db: Session = Depends(get_db)):
+async def monthly_summary(mode: Optional[str] = "paper", db: Session = Depends(get_db)):
     from backend.database import get_monthly_summary
-    return get_monthly_summary(db)
+    return get_monthly_summary(db, mode)
 
 @app.get("/api/journal/signals")
 async def get_signals(limit: int = 50, db: Session = Depends(get_db)):
@@ -859,9 +932,14 @@ async def get_signals(limit: int = 50, db: Session = Depends(get_db)):
     ]}
 
 @app.get("/api/journal/trades")
-async def get_paper_trades(limit: int = 100, db: Session = Depends(get_db)):
-    from backend.database import PaperTrade
-    trades = db.query(PaperTrade).order_by(PaperTrade.opened_at.desc()).limit(limit).all()
+async def get_trades(mode: Optional[str] = "paper", limit: int = 100, db: Session = Depends(get_db)):
+    if mode == "live":
+        from backend.database import LiveTrade
+        trades = db.query(LiveTrade).order_by(LiveTrade.opened_at.desc()).limit(limit).all()
+    else:
+        from backend.database import PaperTrade
+        trades = db.query(PaperTrade).order_by(PaperTrade.opened_at.desc()).limit(limit).all()
+        
     return {"trades": [
         {
             "id": t.id, "symbol": t.symbol, "company_name": t.company_name,
@@ -873,6 +951,7 @@ async def get_paper_trades(limit: int = 100, db: Session = Depends(get_db)):
         }
         for t in trades
     ]}
+
 
 
 # ──────────────────── TELEGRAM ALERT ENDPOINTS ────────────────────

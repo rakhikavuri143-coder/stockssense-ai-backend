@@ -64,6 +64,29 @@ class PaperTrade(Base):
     trade_date     = Column(Date, default=date.today)
 
 
+class LiveTrade(Base):
+    __tablename__ = "live_trades"
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id      = Column(Integer, nullable=True)
+    symbol         = Column(String(30), nullable=False)
+    company_name   = Column(String(100))
+    action         = Column(String(10))         # BUY / SELL
+    entry_price    = Column(Float)
+    quantity       = Column(Integer)
+    exit_price     = Column(Float, nullable=True)
+    stop_loss      = Column(Float)
+    target1        = Column(Float)
+    target2        = Column(Float)
+    status         = Column(String(20), default="OPEN")  # OPEN / CLOSED / SL_HIT / T1_HIT / T2_HIT
+    order_id       = Column(String(50), nullable=True)   # Angel One order ID
+    pnl            = Column(Float, default=0.0)
+    pnl_percent    = Column(Float, default=0.0)
+    opened_at      = Column(DateTime, default=datetime.utcnow)
+    closed_at      = Column(DateTime, nullable=True)
+    trade_date     = Column(Date, default=date.today)
+
+
+
 class DailyPerformance(Base):
     __tablename__ = "daily_performance"
     id             = Column(Integer, primary_key=True, autoincrement=True)
@@ -178,7 +201,20 @@ def get_open_paper_trades(db: Session):
     return db.query(PaperTrade).filter(PaperTrade.status == "OPEN").all()
 
 
-def get_weekly_summary(db: Session):
+def save_live_trade(db: Session, trade_data: dict) -> LiveTrade:
+    obj = LiveTrade(**trade_data)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_open_live_trades(db: Session):
+    return db.query(LiveTrade).filter(LiveTrade.status == "OPEN").all()
+
+
+
+def get_weekly_summary(db: Session, mode: str = "paper"):
     from sqlalchemy import text
     dialect = db.bind.dialect.name
     if dialect == "sqlite":
@@ -186,6 +222,7 @@ def get_weekly_summary(db: Session):
     else:
         date_filter = "CURRENT_DATE - INTERVAL '7 days'"
         
+    table_name = "live_trades" if mode == "live" else "paper_trades"
     result = db.execute(text(f"""
         SELECT
             COUNT(*) as total_trades,
@@ -193,13 +230,13 @@ def get_weekly_summary(db: Session):
             SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
             COALESCE(SUM(pnl), 0) as net_pnl,
             COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
-        FROM paper_trades
+        FROM {table_name}
         WHERE trade_date >= {date_filter}
     """)).fetchone()
     return dict(result._mapping) if result else {}
 
 
-def get_monthly_summary(db: Session):
+def get_monthly_summary(db: Session, mode: str = "paper"):
     from sqlalchemy import text
     dialect = db.bind.dialect.name
     if dialect == "sqlite":
@@ -207,6 +244,7 @@ def get_monthly_summary(db: Session):
     else:
         date_filter = "CURRENT_DATE - INTERVAL '30 days'"
         
+    table_name = "live_trades" if mode == "live" else "paper_trades"
     result = db.execute(text(f"""
         SELECT
             COUNT(*) as total_trades,
@@ -214,10 +252,11 @@ def get_monthly_summary(db: Session):
             SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
             COALESCE(SUM(pnl), 0) as net_pnl,
             COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
-        FROM paper_trades
+        FROM {table_name}
         WHERE trade_date >= {date_filter}
     """)).fetchone()
     return dict(result._mapping) if result else {}
+
 
 
 

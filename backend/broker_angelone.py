@@ -154,3 +154,61 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
     except Exception as e:
         logger.error("Exception fetching positions: %s", e)
         return None
+
+
+_token_map_cache = {}
+
+def fetch_and_cache_tokens() -> dict:
+    """Download and cache Angel One scrip master tokens for NSE Equity."""
+    global _token_map_cache
+    if _token_map_cache:
+        return _token_map_cache
+    
+    url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    try:
+        logger.info("📥 Downloading Angel One Scrip Master for token mapping...")
+        response = httpx.get(url, timeout=10.0)
+        if response.status_code == 200:
+            scrip_list = response.json()
+            temp_map = {}
+            for item in scrip_list:
+                if item.get("exch_seg") == "NSE" and item.get("symbol", "").endswith("-EQ"):
+                    base_name = item["symbol"].replace("-EQ", "")
+                    temp_map[base_name] = {
+                        "token": item["token"],
+                        "trading_symbol": item["symbol"]
+                    }
+            _token_map_cache = temp_map
+            logger.info("✅ Cached %d NSE Equity tokens in memory.", len(_token_map_cache))
+            return _token_map_cache
+    except Exception as e:
+        logger.error("❌ Failed to cache Scrip Master: %s. Using hardcoded fallbacks.", e)
+    return {}
+
+
+def get_angelone_token_and_symbol(yahoo_symbol: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Given a Yahoo Finance symbol like 'RELIANCE.NS', return (token, tradingsymbol) for Angel One.
+    e.g., 'RELIANCE.NS' -> ('3045', 'RELIANCE-EQ')
+    """
+    base = yahoo_symbol.upper().replace(".NS", "").replace(".BO", "").strip()
+    
+    # Try cache first
+    cache = fetch_and_cache_tokens()
+    if base in cache:
+        return cache[base]["token"], cache[base]["trading_symbol"]
+    
+    # Hardcoded fallbacks for testing or if download fails
+    fallbacks = {
+        "IDEA": ("14366", "IDEA-EQ"),
+        "RELIANCE": ("3045", "RELIANCE-EQ"),
+        "TCS": ("11536", "TCS-EQ"),
+        "SBIN": ("3063", "SBIN-EQ"),
+        "WIPRO": ("3787", "WIPRO-EQ"),
+        "ADANIPORTS": ("15083", "ADANIPORTS-EQ")
+    }
+    if base in fallbacks:
+        return fallbacks[base]
+        
+    return None, None
+

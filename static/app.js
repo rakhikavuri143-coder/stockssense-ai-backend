@@ -15,11 +15,13 @@ let isMarketOpenGlobal = true;
 let autoScanTimerId   = null;
 let autoScanSecLeft   = 180; // 3 minutes auto-refresh interval
 let lastScanCategory  = 'nifty50';
+let currentMode       = localStorage.getItem('tradingMode') || 'paper';
 
 // ─────────────────────── INIT & AUTO-RECONNECT ───────────────────────
 let isNetworkOffline = false;
 
 document.addEventListener('DOMContentLoaded', () => {
+  syncTradingModeUI();
   loadWatchlist();
   loadNiftyStatus();
   loadPortfolio();
@@ -95,6 +97,54 @@ function setupConfidenceSlider() {
 
 function getConfidenceThreshold() {
   return parseInt(document.getElementById('confidenceSlider').value, 10);
+}
+
+// ─────────────────────── TRADING MODE TOGGLE ───────────────────────
+function toggleTradingMode() {
+  const btn = document.getElementById('modeToggleBtn');
+  if (currentMode === 'paper') {
+    if (!confirm('🟢 Switch to LIVE Trading Mode? Real trades will be routed to your Angel One account.')) return;
+    currentMode = 'live';
+    showToast('🟢 Live Trading Mode Active', 'buy');
+  } else {
+    currentMode = 'paper';
+    showToast('📝 Paper Trading Mode Active', '');
+  }
+  localStorage.setItem('tradingMode', currentMode);
+  syncTradingModeUI();
+  
+  // Re-load data
+  loadPortfolio();
+  loadJournal();
+}
+
+function syncTradingModeUI() {
+  const btn = document.getElementById('modeToggleBtn');
+  if (!btn) return;
+  if (currentMode === 'live') {
+    btn.textContent = '🟢 LIVE';
+    btn.style.color = '#00ff88';
+    btn.style.borderColor = 'rgba(0,255,136,0.3)';
+    btn.style.background = 'rgba(0,255,136,0.06)';
+  } else {
+    btn.textContent = '📝 PAPER';
+    btn.style.color = '#ffbd59';
+    btn.style.borderColor = 'rgba(255,189,89,0.3)';
+    btn.style.background = '#1e293b';
+  }
+  const paperTab = document.getElementById('tab-paper');
+  if (paperTab) {
+    paperTab.textContent = currentMode === 'live' ? '💼 Live Trading' : '📝 Paper Trading';
+  }
+  const balLabel = document.querySelector('.balance-label');
+  if (balLabel) {
+    balLabel.textContent = currentMode === 'live' ? 'Live P&L Lock' : 'Paper Balance';
+  }
+  const resetBtn = document.querySelector('.btn-reset');
+  if (resetBtn) {
+    // Hide reset button in live mode for safety
+    resetBtn.style.display = currentMode === 'live' ? 'none' : 'inline-block';
+  }
 }
 
 // ─────────────────────── TABS ───────────────────────
@@ -886,12 +936,21 @@ async function submitQuickOrder() {
   if (isNaN(sl) || sl <= 0) { showQoError('Enter Stop Loss price.'); return; }
   if (isNaN(t1) || t1 <= 0) { showQoError('Enter Target 1 price.'); return; }
 
+  // Live trading verification guard popup
+  if (currentMode === 'live') {
+    const formattedSymbol = symbol.replace('.NS', '');
+    if (!confirm(`⚠️ REAL MONEY WARNING!\n\nAre you sure you want to execute a LIVE order for ${qty} shares of ${formattedSymbol} at ₹${price.toFixed(2)}? This uses REAL money from your Angel One account!`)) {
+      return;
+    }
+  }
+
   const btn = document.getElementById('qo_submit_btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Placing Order…'; }
 
   try {
     const cleanSignalId = (signalId && signalId !== 'null' && !isNaN(signalId)) ? parseInt(signalId, 10) : null;
-    const res = await fetch('/api/paper/buy-sell', {
+    const endpoint = currentMode === 'live' ? '/api/live/buy-sell' : '/api/paper/buy-sell';
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({
@@ -903,7 +962,8 @@ async function submitQuickOrder() {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`✅ Paper ${action}: ${qty} shares x ${symbol.replace('.NS','')} @ ₹${price.toFixed(2)}`, action.toLowerCase());
+      const modePrefix = currentMode === 'live' ? '⚡ LIVE' : '✅ Paper';
+      showToast(`${modePrefix} ${action}: ${qty} shares x ${symbol.replace('.NS','')} @ ₹${price.toFixed(2)}`, action.toLowerCase());
       if (alertsEnabled) playAlertSound();
       closeQuickOrderModal();
       switchTab('paper');
@@ -917,7 +977,7 @@ async function submitQuickOrder() {
   } catch (e) {
     showQoError('❌ Network error: ' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '🚀 Confirm Paper Trade'; }
+    if (btn) { btn.disabled = false; btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade' : '🚀 Confirm Paper Trade'; }
   }
 }
 
@@ -980,7 +1040,8 @@ async function closePosition(symbol) {
 
 async function fetchPositionData(symbol) {
   try {
-    const res  = await fetch('/api/paper/portfolio');
+    const endpoint = currentMode === 'live' ? '/api/live/portfolio' : '/api/paper/portfolio';
+    const res  = await fetch(endpoint);
     const data = await res.json();
     return (data.positions || []).find(p => p.symbol === symbol) || { symbol, entry_price: 0, quantity: 1, action: 'BUY' };
   } catch { return { symbol, entry_price: 0, quantity: 1, action: 'BUY' }; }
@@ -1034,7 +1095,8 @@ async function submitClosePosition() {
   btn.textContent = 'Closing…';
 
   try {
-    const res  = await fetch('/api/paper/close', {
+    const endpoint = currentMode === 'live' ? '/api/live/close' : '/api/paper/close';
+    const res  = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: reason }),
@@ -1071,6 +1133,10 @@ function showCpError(msg) {
 
 
 async function resetPaperAccount() {
+  if (currentMode === 'live') {
+    showToast('🚫 Reset is only available for Paper Trading Mode.', 'sell');
+    return;
+  }
   if (!confirm('Reset paper account to ₹3,00,000? All positions and trades will be cleared.')) return;
   await fetch('/api/paper/reset', {
     method: 'POST',
@@ -1082,20 +1148,26 @@ async function resetPaperAccount() {
 
 async function loadPortfolio() {
   try {
-    const res  = await fetch('/api/paper/portfolio');
+    const endpoint = currentMode === 'live' ? '/api/live/portfolio' : '/api/paper/portfolio';
+    const res  = await fetch(endpoint);
     const data = await res.json();
 
-    const bal  = data.paper_balance || 0;
+    const bal  = currentMode === 'live' ? 0 : (data.paper_balance || 0);
     const pnl  = data.total_pnl || 0;
     const pct  = data.total_pnl_pct || 0;
     const pnlSign = pnl >= 0 ? '+' : '';
 
-    document.getElementById('paperBalance').textContent = `₹${bal.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+    if (currentMode === 'live') {
+      document.getElementById('paperBalance').textContent = `${pnl >= 0 ? '🟢' : '🔴'} ₹${pnl.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+    } else {
+      document.getElementById('paperBalance').textContent = `₹${bal.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+    }
+    
     const pnlEl = document.getElementById('paperPnl');
-    pnlEl.textContent = `${pnlSign}₹${pnl.toFixed(2)} (${pnlSign}${pct.toFixed(2)}%)`;
+    pnlEl.textContent = `${pnlSign}₹${pnl.toFixed(2)} (${currentMode === 'live' ? 'Live P&L' : pnlSign + pct.toFixed(2) + '%'})`;
     pnlEl.className = `balance-pnl ${pnl < 0 ? 'loss' : ''}`;
     document.getElementById('openPositions').textContent = data.open_positions || 0;
-    document.getElementById('totalReturn').textContent = `${pnlSign}${pct.toFixed(2)}%`;
+    document.getElementById('totalReturn').textContent = `${pnlSign}₹${pnl.toFixed(2)}`;
 
     renderPositions(data.positions || []);
     await loadTrades();
@@ -1116,7 +1188,8 @@ async function quickClosePosition(symbol) {
       return;
     }
 
-    const res = await fetch('/api/paper/close', {
+    const endpoint = currentMode === 'live' ? '/api/live/close' : '/api/paper/close';
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: 'MANUAL' }),
@@ -1219,7 +1292,7 @@ function renderPositions(positions) {
 
 async function loadTrades() {
   try {
-    const res  = await fetch('/api/journal/trades');
+    const res  = await fetch(`/api/journal/trades?mode=${currentMode}`);
     const data = await res.json();
     const body = document.getElementById('tradesBody');
     if (!data.trades || data.trades.length === 0) {
@@ -1252,8 +1325,8 @@ async function loadTrades() {
 async function loadJournal() {
   try {
     const [wRes, mRes, sRes] = await Promise.all([
-      fetch('/api/journal/weekly'),
-      fetch('/api/journal/monthly'),
+      fetch(`/api/journal/weekly?mode=${currentMode}`),
+      fetch(`/api/journal/monthly?mode=${currentMode}`),
       fetch('/api/journal/signals'),
     ]);
     const weekly  = await wRes.json();
@@ -1581,12 +1654,21 @@ async function submitManualTrade() {
   if (action === 'BUY'  && sl >= price) { showMtError('BUY: Stop Loss must be BELOW entry price.'); return; }
   if (action === 'SELL' && sl <= price) { showMtError('SELL: Stop Loss must be ABOVE entry price.'); return; }
 
+  // Live trading verification guard popup
+  if (currentMode === 'live') {
+    const formattedSymbol = _mtSymbol.replace('.NS', '');
+    if (!confirm(`⚠️ REAL MONEY WARNING!\n\nAre you sure you want to execute a LIVE order for ${qty} shares of ${formattedSymbol} at ₹${price.toFixed(2)}? This uses REAL money from your Angel One account!`)) {
+      return;
+    }
+  }
+
   const btn = document.getElementById('mt_submit_btn');
   btn.disabled    = true;
   btn.textContent = 'Placing trade…';
 
   try {
-    const res  = await fetch('/api/paper/manual-order', {
+    const endpoint = currentMode === 'live' ? '/api/live/buy-sell' : '/api/paper/manual-order';
+    const res  = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({
@@ -1597,7 +1679,8 @@ async function submitManualTrade() {
     });
     const data = await res.json();
     if (data.success) {
-      showToast(`Manual ${action}: ${qty} x ${_mtSymbol.replace('.NS','')} @ Rs.${price.toFixed(2)}`, action.toLowerCase());
+      const modePrefix = currentMode === 'live' ? '⚡ LIVE' : 'Manual';
+      showToast(`${modePrefix} ${action}: ${qty} x ${_mtSymbol.replace('.NS','')} @ Rs.${price.toFixed(2)}`, action.toLowerCase());
       if (alertsEnabled) playAlertSound();
       closeManualTradeModal();
       loadPortfolio();
@@ -1608,7 +1691,7 @@ async function submitManualTrade() {
     showMtError('Network error: ' + e.message);
   } finally {
     btn.disabled    = false;
-    btn.textContent = 'Place Paper Trade';
+    btn.textContent = currentMode === 'live' ? 'Place LIVE Trade' : 'Place Paper Trade';
   }
 }
 
