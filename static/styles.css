@@ -108,19 +108,19 @@ body {
 .header-inner {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 1rem;
   height: 72px;
   max-width: 1600px;
   margin: 0 auto;
-  flex-wrap: wrap;
 }
 
-.brand { display: flex; align-items: center; gap: 0.75rem; }
+.brand { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
 .brand-icon { font-size: 2rem; filter: drop-shadow(0 0 8px rgba(0,255,136,0.5)); }
 .brand-name { font-size: 1.2rem; font-weight: 800; letter-spacing: -0.5px; color: var(--text-primary); }
 .brand-sub  { font-size: 0.72rem; color: var(--text-muted); letter-spacing: 0.5px; }
 
-.header-center { flex: 1; display: flex; justify-content: center; }
+.header-center { display: flex; justify-content: center; align-items: center; }
 
 .nifty-badge {
   display: flex;
@@ -146,7 +146,7 @@ body {
   50%       { opacity: 0.7; box-shadow: 0 0 0 6px transparent; }
 }
 
-.header-actions { display: flex; align-items: center; gap: 0.75rem; }
+.header-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 
 .confidence-slider-wrap {
   display: flex;

@@ -44,6 +44,16 @@
         <input type="range" id="confidenceSlider" min="80" max="98" value="90" step="1" />
         <span id="confidenceVal">90%</span>
       </div>
+      <button class="btn-icon-only" onclick="toggleAlerts()" id="alertBtn" title="Toggle Alerts">🔔</button>
+      <button class="btn-scan" id="headerSignOutBtn" onclick="handleLogout()" style="display:none;background:rgba(255,77,109,0.12);color:#ff4d6d;border:1px solid rgba(255,77,109,0.3);padding:0.4rem 0.75rem;font-size:0.78rem;font-weight:700;">🚪 Sign Out</button>
+    </div>
+  </div>
+</header>
+
+<!-- ╔══════════════ ACTION TOOLBAR (Scan buttons moved here to fix layout) ══════════════╗ -->
+<div class="action-toolbar" style="background:#0a0f1d;border-bottom:1px solid rgba(255,255,255,0.06);padding:0.75rem 1.5rem;">
+  <div style="max-width:1600px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
       <button class="btn-scan" id="scanBtn" onclick="startScan('nifty50')">
         <span class="btn-icon">🔍</span> Scan Nifty 50
       </button>
@@ -53,14 +63,13 @@
       <button class="btn-scan btn-scan-scalp" id="scalpScanBtn" onclick="startScan('fast_scalp')">
         <span class="btn-icon">🔥</span> 1-Hr Fast Scalp
       </button>
-      <div class="auto-scan-badge" id="autoScanBadge" style="display:none;align-items:center;gap:0.4rem;font-size:0.78rem;font-weight:600;color:#a78bfa;background:rgba(124,58,237,0.15);padding:0.4rem 0.75rem;border-radius:8px;border:1px solid rgba(124,58,237,0.3)">
-        <span style="width:8px;height:8px;background:#a78bfa;border-radius:50%;display:inline-block;box-shadow:0 0 8px #a78bfa"></span>
-        <span id="autoScanCountdownText">Auto-Refresh: 03:00</span>
-      </div>
-      <button class="btn-icon-only" onclick="toggleAlerts()" id="alertBtn" title="Toggle Alerts">🔔</button>
-      <button class="btn-scan" id="headerSignOutBtn" onclick="handleLogout()" style="display:none;background:rgba(255,77,109,0.12);color:#ff4d6d;border:1px solid rgba(255,77,109,0.3);padding:0.4rem 0.75rem;font-size:0.78rem;font-weight:700;">🚪 Sign Out</button>
+    </div>
+    <div class="auto-scan-badge" id="autoScanBadge" style="display:none;align-items:center;gap:0.4rem;font-size:0.78rem;font-weight:600;color:#a78bfa;background:rgba(124,58,237,0.15);padding:0.4rem 0.75rem;border-radius:8px;border:1px solid rgba(124,58,237,0.3)">
+      <span style="width:8px;height:8px;background:#a78bfa;border-radius:50%;display:inline-block;box-shadow:0 0 8px #a78bfa"></span>
+      <span id="autoScanCountdownText">Auto-Refresh: 03:00</span>
     </div>
   </div>
+</div>
 <!-- ╔══════════════ SAAS TOP TICKER & TRIAL BANNER ══════════════╗ -->
 <div class="saas-banner-strip" style="background:linear-gradient(90deg,#0f172a,#1e1b4b,#0f172a);border-bottom:1px solid rgba(139,92,246,0.3);padding:0.4rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;font-size:0.8rem;font-weight:600;color:#cbd5e1">
   <div style="display:flex;align-items:center;gap:0.6rem">
