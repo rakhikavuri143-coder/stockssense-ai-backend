@@ -794,17 +794,20 @@ body {
   align-items: center;
   justify-content: center;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
-  transition: opacity 0.25s ease;
+  transition: opacity 0.25s ease, visibility 0.25s ease;
 }
 #manualTradeOverlay.active, #closePosOverlay.active {
   opacity: 1;
+  visibility: visible;
   pointer-events: all;
 }
 #manualTradeOverlay.active .manual-trade-modal,
 #closePosOverlay.active .close-pos-modal {
   transform: translateY(0) scale(1);
 }
+
 
 
 .manual-trade-modal {
