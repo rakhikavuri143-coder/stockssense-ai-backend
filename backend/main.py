@@ -16,7 +16,7 @@ from datetime import date, datetime
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -42,6 +42,23 @@ from backend.user_db import init_user_db, upsert_user, get_trial_status, get_all
 
 CONFIDENCE_THRESHOLD = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "90"))
 PAPER_CAPITAL        = float(os.getenv("PAPER_CAPITAL", "10000"))
+
+
+# ─────────────────────────── SECURITY: AUTH DEPENDENCY ────────────────────────────
+def require_authenticated_user(request: Request) -> str:
+    """
+    Lightweight auth gate for paper-trading endpoints.
+    Reads X-User-Email header set by the frontend after Google login.
+    Blocks bots, crawlers, and unauthenticated visitors from placing trades.
+    """
+    email = request.headers.get("X-User-Email", "").strip()
+    if not email:
+        raise HTTPException(
+            status_code=403,
+            detail="🔒 Login required to trade. Please sign in with Google first."
+        )
+    return email
+
 
 # ─────────────────────────── SCHEDULER ────────────────────────────
 scheduler = AsyncIOScheduler()
@@ -709,7 +726,7 @@ class PaperOrderRequest(BaseModel):
     is_scalp:     Optional[bool] = False
 
 @app.post("/api/paper/buy-sell")
-async def paper_order(req: PaperOrderRequest, db: Session = Depends(get_db)):
+async def paper_order(req: PaperOrderRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
     company_name = req.company_name
     if req.is_scalp:
         company_name = f"{company_name} (Scalp)"
@@ -727,7 +744,7 @@ class ClosePositionRequest(BaseModel):
     exit_reason: Optional[str] = "MANUAL"
 
 @app.post("/api/paper/close")
-async def close_paper(req: ClosePositionRequest, db: Session = Depends(get_db)):
+async def close_paper(req: ClosePositionRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
     result = paper_trading.close_paper_position(db, req.symbol, req.exit_price, req.exit_reason)
     return result
 
@@ -736,7 +753,7 @@ async def get_portfolio(db: Session = Depends(get_db)):
     return paper_trading.get_paper_portfolio_summary(db)
 
 @app.post("/api/paper/reset")
-async def reset_paper(db: Session = Depends(get_db)):
+async def reset_paper(db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
     paper_trading.reset_paper_account(db)
     return {"message": "Paper account reset successfully", "balance": paper_trading.get_paper_balance(db)}
 
@@ -752,7 +769,7 @@ class ManualOrderRequest(BaseModel):
     target2:      float
 
 @app.post("/api/paper/manual-order")
-async def manual_paper_order(req: ManualOrderRequest, db: Session = Depends(get_db)):
+async def manual_paper_order(req: ManualOrderRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
     """Place a manual paper trade for any stock — user-defined price, qty, SL & targets."""
     # Normalise symbol to Yahoo Finance format
     symbol = req.symbol.upper().strip()

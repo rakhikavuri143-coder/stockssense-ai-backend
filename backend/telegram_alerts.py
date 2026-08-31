@@ -144,6 +144,7 @@ def alert_trade_closed(symbol: str, action: str, entry_price: float,
         "EOD_AUTO_SQUAREOFF": "⏰ EOD 3:10 PM Auto Close",
 
         "PROFIT_RETREAT_LOCK":"💰 Trailing Profit Lock",
+        "CIRCUIT_EMERGENCY_EXIT": "🚨 Circuit Emergency Exit (Guard #17)",
     }
     reason_text = reason_map.get(exit_reason, exit_reason)
 

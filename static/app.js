@@ -893,7 +893,7 @@ async function submitQuickOrder() {
     const cleanSignalId = (signalId && signalId !== 'null' && !isNaN(signalId)) ? parseInt(signalId, 10) : null;
     const res = await fetch('/api/paper/buy-sell', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({
         symbol, company_name: name, action, entry_price: price,
         quantity: qty, stop_loss: sl, target1: t1, target2: t2,
@@ -1036,7 +1036,7 @@ async function submitClosePosition() {
   try {
     const res  = await fetch('/api/paper/close', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: reason }),
     });
     const data = await res.json();
@@ -1072,7 +1072,10 @@ function showCpError(msg) {
 
 async function resetPaperAccount() {
   if (!confirm('Reset paper account to ₹3,00,000? All positions and trades will be cleared.')) return;
-  await fetch('/api/paper/reset', { method: 'POST' });
+  await fetch('/api/paper/reset', {
+    method: 'POST',
+    headers: authHeaders(),
+  });
   showToast('↺ Paper account reset to ₹3,00,000', '');
   loadPortfolio();
 }
@@ -1115,7 +1118,7 @@ async function quickClosePosition(symbol) {
 
     const res = await fetch('/api/paper/close', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: 'MANUAL' }),
     });
     const data = await res.json();
@@ -1585,7 +1588,7 @@ async function submitManualTrade() {
   try {
     const res  = await fetch('/api/paper/manual-order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({
         symbol: _mtSymbol, action,
         entry_price: price, quantity: qty,
@@ -1654,6 +1657,25 @@ const SS_USER_KEY  = 'ss_user';
 const SS_TRIAL_KEY = 'ss_trial';
 let GOOGLE_CLIENT_ID = "";
 
+/** Get logged-in user's email from localStorage (for API auth headers) */
+function getUserEmail() {
+  try {
+    const stored = localStorage.getItem(SS_USER_KEY);
+    if (stored) {
+      const u = JSON.parse(stored);
+      return (u.user && u.user.email) ? u.user.email : '';
+    }
+  } catch(e) {}
+  return '';
+}
+
+/** Build headers object with auth for paper-trading API calls */
+function authHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'X-User-Email': getUserEmail(),
+  };
+}
 
 /** Called on every page load — check if user already logged in */
 async function initAuthSession() {

@@ -18,6 +18,79 @@ from backend.database import PaperTrade, save_paper_trade, get_open_paper_trades
 
 logger = logging.getLogger(__name__)
 
+
+# ═══════════════════════════════════════════════════════════
+# GUARD 17: CIRCUIT AND LIQUIDITY GUARD
+# ═══════════════════════════════════════════════════════════
+def circuit_and_liquidity_guard(market_depth, ltp, lower_circuit):
+    """
+    Evaluates Circuit Proximity & Order Book Liquidity
+    Returns: 'ALLOW', 'EMERGENCY_EXIT', or 'BLOCK_ENTRY'
+    """
+    # 1. Calculate distance from Lower Circuit
+    circuit_distance_pct = ((ltp - lower_circuit) / ltp) * 100
+    
+    # 2. Extract Top 5 Order Book Totals
+    total_buyers_qty = sum([bid['quantity'] for bid in market_depth.get('bids', [])])
+    total_sellers_qty = sum([ask['quantity'] for ask in market_depth.get('asks', [])])
+    
+    # Pre-Entry Filter: Too close to circuit
+    if circuit_distance_pct < 3.5:
+        return "BLOCK_ENTRY"  # Too risky to trade
+    
+    # Live Trade Surveillance: Buyers collapsing near lower circuit
+    if total_buyers_qty > 0 and (total_sellers_qty / total_buyers_qty) > 5.0 and circuit_distance_pct < 1.2:
+        return "EMERGENCY_EXIT"  # Dump position before 0 buyers freeze
+        
+    return "SAFE"
+
+
+def get_circuit_and_depth_simulator(symbol: str, ltp: float) -> tuple[dict, float]:
+    """
+    Fetches stock data from yfinance and constructs simulated market depth
+    to support Guard #17 in the paper trading environment.
+    """
+    import yfinance as yf
+    
+    lower_circuit = ltp * 0.90  # default fallback to 10% below ltp
+    
+    try:
+        ticker = yf.Ticker(symbol)
+        prev_close = None
+        fast_info = getattr(ticker, "fast_info", None)
+        if fast_info and getattr(fast_info, "previous_close", None):
+            prev_close = float(fast_info.previous_close)
+        
+        if not prev_close:
+            # Fallback to info dict
+            info = ticker.info
+            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
+            
+        if prev_close:
+            lower_circuit = prev_close * 0.90  # 10% limit
+    except Exception as e:
+        logger.debug("Could not determine circuit limit from yfinance for %s: %s", symbol, e)
+
+    # Proximity calculation
+    circuit_distance_pct = ((ltp - lower_circuit) / ltp) * 100
+    
+    # Simulate Order Book (Market Depth) based on proximity
+    # If the price drops close to the circuit (<1.2%), simulate buyer collapse
+    if circuit_distance_pct < 1.2:
+        # Sellers outnumber buyers 6:1 to trigger EMERGENCY_EXIT
+        bids = [{"price": lower_circuit, "quantity": 100}]
+        asks = [{"price": ltp, "quantity": 600}]
+    else:
+        # Normal healthy market depth
+        bids = [{"price": ltp * 0.99, "quantity": 800}]
+        asks = [{"price": ltp * 1.01, "quantity": 400}]
+        
+    market_depth = {"bids": bids, "asks": asks}
+    return market_depth, lower_circuit
+
+
+logger = logging.getLogger(__name__)
+
 # Starting capital
 _paper_capital = float(os.getenv("PAPER_CAPITAL", "300000"))
 
@@ -116,6 +189,19 @@ def place_paper_order(
         }
 
     balance, open_positions = sync_state(db)
+
+    # 0.5. Guard #17: Circuit Proximity Pre-Entry Filter
+    try:
+        m_depth, low_circuit = get_circuit_and_depth_simulator(symbol, entry_price)
+        guard_status = circuit_and_liquidity_guard(m_depth, entry_price, low_circuit)
+        if guard_status == "BLOCK_ENTRY":
+            return {
+                "success": False,
+                "message": f"🛡️ Circuit Proximity Guard Active: Stock is too close to its lower circuit limit. Blocked trade entry to prevent trading lockup."
+            }
+    except Exception as ge:
+        logger.warning("Circuit proximity check failed for %s: %s", symbol, ge)
+
 
     if symbol in open_positions:
         return {"success": False, "message": f"Already have an open paper position in {symbol}"}
@@ -308,7 +394,8 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
     budget_symbols  = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
     ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     current_time_str = ist_now.strftime("%H:%M")
-    is_eod_squareoff_time = current_time_str >= "15:10"
+    is_eod_squareoff_time = "15:10" <= current_time_str <= "15:35"
+
 
 
     for symbol, pos in list(open_positions.items()):
@@ -346,8 +433,22 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
             res = close_paper_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
             results.append(res)
             _peak_prices.pop(trade_id, None)
-            _peak_pnl.pop(trade_id, None)
             continue
+
+        # 🛡️ Guard #17: Circuit Emergency Exit Surveillance Check
+        try:
+            m_depth, low_circuit = get_circuit_and_depth_simulator(symbol, price)
+            guard_status = circuit_and_liquidity_guard(m_depth, price, low_circuit)
+            if guard_status == "EMERGENCY_EXIT":
+                res = close_paper_position(db, symbol, price, exit_reason="CIRCUIT_EMERGENCY_EXIT")
+                results.append(res)
+                _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
+                logger.info("🚨 Guard #17 Active: Circuit Emergency Exit triggered for %s. Buyers collapsed near circuit freeze.", symbol)
+                continue
+        except Exception as ge:
+            logger.warning("Circuit emergency monitoring failed for %s: %s", symbol, ge)
+
 
         if action == "BUY":
             entry_p = pos["entry_price"]
