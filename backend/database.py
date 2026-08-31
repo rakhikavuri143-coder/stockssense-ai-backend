@@ -79,10 +79,40 @@ class DailyPerformance(Base):
     created_at     = Column(DateTime, default=datetime.utcnow)
 
 
+class User(Base):
+    __tablename__ = "users"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    google_id     = Column(String(100), unique=True, nullable=False)
+    email         = Column(String(100), unique=True, nullable=False)
+    name          = Column(String(100))
+    picture       = Column(String(200))
+    trial_ends_at = Column(String(50), nullable=False)
+    active_pass   = Column(String(20), default="NONE")
+    pass_ends_at  = Column(String(50))
+    joined_at     = Column(String(50), nullable=False)
+    last_login    = Column(String(50))
+
+
 # ─────────────────────────── ENGINE SETUP ────────────────────────────
 
 def _build_engine():
-    """Try MySQL first, fallback to SQLite."""
+    """Try Database URL (Postgres/MySQL) first, fallback to SQLite."""
+    # 1. Try generic DATABASE_URL (for PostgreSQL/Supabase, etc.)
+    db_url = os.getenv("DATABASE_URL")
+    if db_url:
+        # SQLAlchemy requires postgresql:// instead of postgres://
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+        try:
+            engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=1800)
+            with engine.connect():
+                pass
+            logger.info("✅ Connected to database using DATABASE_URL")
+            return engine
+        except Exception as e:
+            logger.warning("⚠️ Database connection via DATABASE_URL failed: %s. Trying MySQL...", e)
+
+    # 2. Try MySQL next
     mysql_user = os.getenv("MYSQL_USER", "root")
     mysql_pass = os.getenv("MYSQL_PASSWORD", "")
     mysql_host = os.getenv("MYSQL_HOST", "localhost")
@@ -100,6 +130,7 @@ def _build_engine():
         except Exception as e:
             logger.warning("⚠️  MySQL connection failed (%s). Falling back to SQLite.", e)
 
+    # 3. Fallback to SQLite
     sqlite_path = os.path.join(os.path.dirname(__file__), "..", "data", "stock_agent.db")
     os.makedirs(os.path.dirname(sqlite_path), exist_ok=True)
     engine = create_engine(f"sqlite:///{sqlite_path}", connect_args={"check_same_thread": False})
@@ -109,6 +140,7 @@ def _build_engine():
 
 engine = _build_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 
 def init_db():
