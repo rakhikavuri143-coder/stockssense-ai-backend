@@ -45,31 +45,41 @@ def circuit_and_liquidity_guard(market_depth, ltp, lower_circuit):
     return "SAFE"
 
 
+_circuit_cache = {}
+
 def get_circuit_and_depth_simulator(symbol: str, ltp: float) -> tuple[dict, float]:
     """
     Fetches stock data from yfinance and constructs simulated market depth
     to support Guard #17 in the paper trading environment.
+    Uses an in-memory cache to prevent slow API calls.
     """
-    import yfinance as yf
+    global _circuit_cache
     
-    lower_circuit = ltp * 0.90  # default fallback to 10% below ltp
-    
-    try:
-        ticker = yf.Ticker(symbol)
-        prev_close = None
-        fast_info = getattr(ticker, "fast_info", None)
-        if fast_info and getattr(fast_info, "previous_close", None):
-            prev_close = float(fast_info.previous_close)
-        
-        if not prev_close:
-            # Fallback to info dict
-            info = ticker.info
-            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
+    # If already cached, return immediately
+    if symbol in _circuit_cache:
+        lower_circuit = _circuit_cache[symbol]
+    else:
+        import yfinance as yf
+        lower_circuit = ltp * 0.90  # default fallback to 10% below ltp
+        try:
+            ticker = yf.Ticker(symbol)
+            prev_close = None
+            fast_info = getattr(ticker, "fast_info", None)
+            if fast_info and getattr(fast_info, "previous_close", None):
+                prev_close = float(fast_info.previous_close)
             
-        if prev_close:
-            lower_circuit = prev_close * 0.90  # 10% limit
-    except Exception as e:
-        logger.debug("Could not determine circuit limit from yfinance for %s: %s", symbol, e)
+            if not prev_close:
+                # Use history (much faster than ticker.info)
+                hist = ticker.history(period="1d")
+                if not hist.empty:
+                    prev_close = float(hist['Close'].iloc[-1])
+                
+            if prev_close:
+                lower_circuit = prev_close * 0.90  # 10% limit
+                _circuit_cache[symbol] = lower_circuit
+        except Exception as e:
+            logger.debug("Could not determine circuit limit from yfinance for %s: %s", symbol, e)
+            _circuit_cache[symbol] = lower_circuit  # Cache the fallback to avoid repeating error calls
 
     # Proximity calculation
     circuit_distance_pct = ((ltp - lower_circuit) / ltp) * 100

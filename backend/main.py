@@ -165,20 +165,45 @@ async def midday_scan_job():
 async def auto_exit_monitor_job():
     """Check live prices for open paper positions every 15s and auto-exit on SL/Target hit."""
     def _fetch_prices(symbols):
+        if not symbols:
+            return {}
         import yfinance as yf
         prices = {}
+        # Try bulk download first (extremely fast for multiple tickers)
+        try:
+            tickers_str = " ".join(symbols)
+            # Fetch last few minutes of data
+            data = yf.download(tickers=symbols, period="1d", interval="1m", group_by="ticker", progress=False, threads=True)
+            for sym in symbols:
+                try:
+                    if len(symbols) > 1:
+                        if sym in data.columns.levels[0]:
+                            ticker_df = data[sym].dropna(subset=["Close"])
+                            if not ticker_df.empty:
+                                prices[sym] = float(ticker_df["Close"].iloc[-1])
+                    else:
+                        ticker_df = data.dropna(subset=["Close"])
+                        if not ticker_df.empty:
+                            prices[sym] = float(ticker_df["Close"].iloc[-1])
+                except Exception as sym_ex:
+                    logger.debug("Failed to extract price for %s from bulk download: %s", sym, sym_ex)
+        except Exception as ex:
+            logger.warning("Bulk price fetch failed: %s", ex)
+
+        # Fallback to fast fast_info / sequential if bulk fails or misses a symbol
         for sym in symbols:
-            try:
-                ticker = yf.Ticker(sym)
-                fast_info = getattr(ticker, "fast_info", None)
-                if fast_info and getattr(fast_info, "last_price", None):
-                    prices[sym] = float(fast_info.last_price)
-                else:
-                    hist = ticker.history(period="1d", interval="1m")
-                    if not hist.empty:
-                        prices[sym] = float(hist["Close"].iloc[-1])
-            except Exception as ex:
-                logger.warning("Auto-exit price fetch failed for %s: %s", sym, ex)
+            if sym not in prices:
+                try:
+                    ticker = yf.Ticker(sym)
+                    fast_info = getattr(ticker, "fast_info", None)
+                    if fast_info and getattr(fast_info, "last_price", None):
+                        prices[sym] = float(fast_info.last_price)
+                    else:
+                        hist = ticker.history(period="1d", interval="1m")
+                        if not hist.empty:
+                            prices[sym] = float(hist["Close"].iloc[-1])
+                except Exception as ex:
+                    logger.warning("Sequential fallback fetch failed for %s: %s", sym, ex)
         return prices
 
     db_gen = get_db()
