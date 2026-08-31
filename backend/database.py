@@ -180,7 +180,13 @@ def get_open_paper_trades(db: Session):
 
 def get_weekly_summary(db: Session):
     from sqlalchemy import text
-    result = db.execute(text("""
+    dialect = db.bind.dialect.name
+    if dialect == "sqlite":
+        date_filter = "date('now', '-7 days')"
+    else:
+        date_filter = "CURRENT_DATE - INTERVAL '7 days'"
+        
+    result = db.execute(text(f"""
         SELECT
             COUNT(*) as total_trades,
             SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
@@ -188,14 +194,20 @@ def get_weekly_summary(db: Session):
             COALESCE(SUM(pnl), 0) as net_pnl,
             COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
         FROM paper_trades
-        WHERE trade_date >= date('now', '-7 days')
+        WHERE trade_date >= {date_filter}
     """)).fetchone()
     return dict(result._mapping) if result else {}
 
 
 def get_monthly_summary(db: Session):
     from sqlalchemy import text
-    result = db.execute(text("""
+    dialect = db.bind.dialect.name
+    if dialect == "sqlite":
+        date_filter = "date('now', '-30 days')"
+    else:
+        date_filter = "CURRENT_DATE - INTERVAL '30 days'"
+        
+    result = db.execute(text(f"""
         SELECT
             COUNT(*) as total_trades,
             SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
@@ -203,9 +215,10 @@ def get_monthly_summary(db: Session):
             COALESCE(SUM(pnl), 0) as net_pnl,
             COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
         FROM paper_trades
-        WHERE trade_date >= date('now', '-30 days')
+        WHERE trade_date >= {date_filter}
     """)).fetchone()
     return dict(result._mapping) if result else {}
+
 
 
 def save_daily_performance(db: Session, today: date, paper_balance: float):
