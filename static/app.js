@@ -29,6 +29,9 @@ document.addEventListener('DOMContentLoaded', () => {
   setupConfidenceSlider();
   setupNetworkAutoReconnect();
 
+  // Start the 3-minute auto-refresh timer immediately on page load
+  startAutoScanCountdown(180);
+
   // Poll Nifty status every 5 minutes
   setInterval(loadNiftyStatus, 5 * 60 * 1000);
   // Poll portfolio every 15 seconds for live P&L sync
