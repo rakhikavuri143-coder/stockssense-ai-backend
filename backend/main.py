@@ -753,20 +753,27 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
             item = await queue.get()
             if item is None:
                 break
-            if '"type": "result"' in item:
+            if '"type": "result"' in item or '"type":"result"' in item or ('result' in item and '"symbol"' in item):
                 signals_count += 1
                 try:
-                    sig_data = _json.loads(item.split("data: ", 1)[1].strip())
-                    collected_signals.append(sig_data)
-                except Exception:
-                    pass
+                    raw_str = item
+                    if "data: " in raw_str:
+                        raw_str = raw_str.split("data: ", 1)[1].strip()
+                    elif "data:" in raw_str:
+                        raw_str = raw_str.split("data:", 1)[1].strip()
+                    sig_data = _json.loads(raw_str)
+                    if sig_data.get("type") == "result":
+                        collected_signals.append(sig_data)
+                except Exception as je:
+                    logger.warning("Failed to collect signal for telegram: %s", je)
                 if '"BUY"' in item or '"SELL"' in item:
                     qualified_count += 1
             yield item
 
         # Send Telegram Alert with all collected signals
         try:
-            telegram_alerts.alert_scan_signals(collected_signals)
+            if collected_signals:
+                telegram_alerts.alert_scan_signals(collected_signals)
         except Exception as e:
             logger.warning("Telegram stream scan alert failed: %s", e)
 
@@ -928,6 +935,19 @@ async def get_live_broker_status():
         return {"status": "connected", "client_code": auth_data.get("client_code")}
     else:
         return {"status": "disconnected", "message": "Broker not connected. Please set credentials in Render."}
+
+
+@app.get("/api/telegram/test")
+async def test_telegram_alert():
+    from backend import telegram_alerts
+    success = telegram_alerts.send_telegram_message("🔔 <b>StocksSense AI Test Ping</b>\n\nTelegram alerts are connected and active! All high-conviction buy/sell signals, order executions, and loss guard auto-exits will arrive here.")
+    token, chat_id = telegram_alerts._get_credentials()
+    return {
+        "success": success,
+        "bot_configured": bool(token and chat_id),
+        "target_chat": chat_id,
+        "message": "Test alert sent to Telegram!" if success else "Failed to send alert (check bot permissions)"
+    }
 
 
 # ─────────────────────────── API: JOURNAL / ANALYTICS ────────────────────────────

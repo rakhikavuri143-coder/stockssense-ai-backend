@@ -9,11 +9,21 @@ import urllib.request
 import urllib.parse
 import json
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+DEFAULT_BOT_TOKEN = "8613233140:AAEfeblJ0e5vK9iJe5CWgao_yjiGRsBuvMk"
+DEFAULT_CHAT_ID   = "7327907687"
+
+def _get_credentials() -> tuple[str, str]:
+    token = os.getenv("TELEGRAM_BOT_TOKEN") or DEFAULT_BOT_TOKEN
+    chat_id = os.getenv("TELEGRAM_CHAT_ID") or DEFAULT_CHAT_ID
+    return token.strip(), chat_id.strip()
+
+BOT_TOKEN, CHAT_ID = _get_credentials()
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -24,14 +34,15 @@ def _ist_now() -> str:
 
 def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
     """Send a message via Telegram Bot API (non-blocking, fire-and-forget)."""
-    if not BOT_TOKEN or not CHAT_ID:
+    bot_token, chat_id = _get_credentials()
+    if not bot_token or not chat_id:
         logger.warning("Telegram credentials not set. Skipping alert.")
         return False
 
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {
-            "chat_id":    CHAT_ID,
+            "chat_id":    chat_id,
             "text":       text,
             "parse_mode": parse_mode,
         }
@@ -60,7 +71,7 @@ def alert_scan_signals(signals: list):
     from backend.indian_stocks import BUDGET_LOW_PRICED_STOCKS
     budget_symbols = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
 
-    buy_sell = [s for s in signals if s.get("signal") in ("BUY", "SELL") and s.get("confidence", 0) >= 85]
+    buy_sell = [s for s in signals if s.get("signal") in ("BUY", "SELL") and s.get("confidence", 0) >= 80]
     if not buy_sell:
         return
 
