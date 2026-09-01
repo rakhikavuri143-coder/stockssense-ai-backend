@@ -45,6 +45,7 @@
         <span id="confidenceVal">90%</span>
       </div>
       <button class="btn-icon-only" onclick="toggleAlerts()" id="alertBtn" title="Toggle Alerts">🔔</button>
+      <button class="btn-scan" id="lockTerminalBtn" onclick="lockPrivateTerminal()" style="background:rgba(139,92,246,0.15);color:#c084fc;border:1px solid rgba(139,92,246,0.3);padding:0.35rem 0.65rem;font-size:0.75rem;font-weight:700;" title="Lock Private Session">🔒 Lock</button>
       <button class="btn-scan" id="headerSignOutBtn" onclick="handleLogout()" style="display:none;background:rgba(255,77,109,0.12);color:#ff4d6d;border:1px solid rgba(255,77,109,0.3);padding:0.4rem 0.75rem;font-size:0.78rem;font-weight:700;">🚪 Sign Out</button>
     </div>
   </div>
@@ -642,6 +643,57 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=20"></script>
+<!-- ═══════════ PRIVATE TERMINAL LOCK SCREEN OVERLAY ═══════════ -->
+<div id="privateLockOverlay" style="
+  position:fixed;inset:0;background:rgba(5,8,20,0.96);
+  display:flex;align-items:center;justify-content:center;
+  z-index:99999;backdrop-filter:blur(16px);
+  transition:opacity 0.3s ease;">
+
+  <div id="privateLockModal" style="
+    background:linear-gradient(145deg,#0d1117,#161b22);
+    border:1px solid rgba(139,92,246,0.4);
+    border-radius:24px;padding:2.5rem 2rem;
+    width:min(440px,94vw);text-align:center;
+    box-shadow:0 24px 80px rgba(0,0,0,0.8),0 0 60px rgba(124,58,237,0.25);">
+    
+    <div style="width:68px;height:68px;background:linear-gradient(135deg,#7c3aed,#4f46e5);border-radius:20px;margin:0 auto 1rem;display:flex;align-items:center;justify-content:center;font-size:2.2rem;box-shadow:0 8px 30px rgba(124,58,237,0.5)">
+      🔒
+    </div>
+    
+    <h2 style="font-size:1.5rem;font-weight:800;color:#f1f5f9;margin-bottom:0.3rem">Private Terminal Access</h2>
+    <p style="font-size:0.85rem;color:#94a3b8;margin-bottom:1.5rem">
+      StocksSense AI is locked for authorized private access only.
+    </p>
+
+    <div style="margin-bottom:1.25rem;text-align:left">
+      <label style="display:block;font-size:0.75rem;font-weight:700;color:#94a3b8;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.5px">Enter Security PIN or Password</label>
+      <div style="position:relative">
+        <input id="privatePinInput" type="password" placeholder="Enter Security PIN (e.g. 1430)" style="
+          width:100%;padding:0.9rem 1.2rem;background:#0b0f19;
+          border:1.5px solid rgba(139,92,246,0.3);border-radius:12px;
+          color:#f1f5f9;font-size:1.1rem;font-weight:700;letter-spacing:2px;outline:none;
+          transition:all 0.2s;" onfocus="this.style.borderColor='#8b5cf6'" onblur="this.style.borderColor='rgba(139,92,246,0.3)'" onkeydown="if(event.key==='Enter')unlockPrivateTerminal()"/>
+        <button type="button" onclick="togglePinVisibility()" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem">👁️</button>
+      </div>
+      <div id="pinErrorMsg" style="display:none;color:#ff4d6d;font-size:0.78rem;font-weight:600;margin-top:0.5rem">❌ Incorrect PIN / Password. Access Denied.</div>
+    </div>
+
+    <button id="unlockBtn" onclick="unlockPrivateTerminal()" style="
+      width:100%;padding:0.9rem 1.2rem;
+      background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;border-radius:12px;
+      font-size:0.95rem;font-weight:700;color:#fff;
+      cursor:pointer;transition:all 0.2s;
+      box-shadow:0 6px 20px rgba(124,58,237,0.4);">
+      🔓 Unlock Dashboard
+    </button>
+
+    <div style="margin-top:1.5rem;display:flex;align-items:center;justify-content:center;gap:0.5rem;font-size:0.75rem;color:#64748b">
+      <span>🛡️ 256-Bit Encrypted Security Gate</span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>

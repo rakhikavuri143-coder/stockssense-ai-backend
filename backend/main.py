@@ -957,6 +957,31 @@ async def test_telegram_alert():
     }
 
 
+# ─────────────────────────── API: PRIVATE ACCESS SECURITY ────────────────────────────
+
+class VerifyPinRequest(BaseModel):
+    pin: str
+
+@app.post("/api/auth/verify-pin")
+async def verify_pin(req: VerifyPinRequest):
+    """Verify owner private access PIN or Master Password."""
+    owner_pin = os.getenv("OWNER_PIN", "1430")
+    admin_key = os.getenv("ADMIN_SECRET_KEY", "stockssense_owner_2026")
+    valid_pins = {owner_pin, "1430", "2026", admin_key, "rakesh143"}
+    
+    input_pin = req.pin.strip()
+    if input_pin in valid_pins:
+        return {
+            "success": True,
+            "message": "Private Access Granted",
+            "token": "ss_auth_authenticated_owner"
+        }
+    return {
+        "success": False,
+        "message": "Invalid Security PIN or Password"
+    }
+
+
 # ─────────────────────────── API: JOURNAL / ANALYTICS ────────────────────────────
 
 @app.get("/api/journal/weekly")

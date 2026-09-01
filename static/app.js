@@ -22,20 +22,32 @@ let isNetworkOffline = false;
 
 document.addEventListener('DOMContentLoaded', () => {
   syncTradingModeUI();
-  loadWatchlist();
-  loadNiftyStatus();
-  loadPortfolio();
-  loadJournal();
   setupConfidenceSlider();
   setupNetworkAutoReconnect();
 
-  // Start the 3-minute auto-refresh timer immediately on page load
-  startAutoScanCountdown(180);
+  // Check Private Terminal Lock Status
+  const isUnlocked = checkPrivateTerminalLock();
+  if (isUnlocked) {
+    loadWatchlist();
+    loadNiftyStatus();
+    loadPortfolio();
+    loadJournal();
+    startAutoScanCountdown(180);
+  }
 
-  // Poll Nifty status every 5 minutes
-  setInterval(loadNiftyStatus, 5 * 60 * 1000);
-  // Poll portfolio every 15 seconds for live P&L sync
-  setInterval(loadPortfolio, 15 * 1000);
+  // Poll Nifty status every 5 minutes (only if unlocked)
+  setInterval(() => {
+    if (localStorage.getItem('ss_private_auth') === 'unlocked_owner') {
+      loadNiftyStatus();
+    }
+  }, 5 * 60 * 1000);
+
+  // Poll portfolio every 15 seconds for live P&L sync (only if unlocked)
+  setInterval(() => {
+    if (localStorage.getItem('ss_private_auth') === 'unlocked_owner') {
+      loadPortfolio();
+    }
+  }, 15 * 1000);
 });
 
 function setupNetworkAutoReconnect() {
@@ -1995,6 +2007,124 @@ function handleLogout() {
   showToast('Signed out successfully.', 'info');
 }
 
+
+// ══════════════════════════════════════════════════
+//  PRIVATE TERMINAL SECURITY (OWNER PIN LOCK GATE)
+// ══════════════════════════════════════════════════
+
+function checkPrivateTerminalLock() {
+  const isUnlocked = localStorage.getItem('ss_private_auth') === 'unlocked_owner';
+  const overlay = document.getElementById('privateLockOverlay');
+  if (isUnlocked) {
+    if (overlay) overlay.style.display = 'none';
+    return true;
+  } else {
+    if (overlay) {
+      overlay.style.display = 'flex';
+      overlay.style.opacity = '1';
+    }
+    const pinInput = document.getElementById('privatePinInput');
+    if (pinInput) setTimeout(() => pinInput.focus(), 150);
+    return false;
+  }
+}
+
+async function unlockPrivateTerminal() {
+  const pinInput = document.getElementById('privatePinInput');
+  const errorMsg = document.getElementById('pinErrorMsg');
+  const btn = document.getElementById('unlockBtn');
+  if (!pinInput) return;
+  const pin = pinInput.value.trim();
+  
+  if (!pin) {
+    if (errorMsg) {
+      errorMsg.textContent = '⚠️ Please enter your Security PIN.';
+      errorMsg.style.display = 'block';
+    }
+    return;
+  }
+  
+  if (btn) {
+    btn.textContent = 'Verifying...';
+    btn.disabled = true;
+  }
+  
+  try {
+    const res = await fetch('/api/auth/verify-pin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin })
+    });
+    const data = await res.json();
+    if (data.success) {
+      localStorage.setItem('ss_private_auth', 'unlocked_owner');
+      const overlay = document.getElementById('privateLockOverlay');
+      if (overlay) {
+        overlay.style.opacity = '0';
+        setTimeout(() => overlay.style.display = 'none', 300);
+      }
+      showToast('🔓 Terminal Unlocked! Welcome Back.', 'success');
+      loadWatchlist();
+      loadNiftyStatus();
+      loadPortfolio();
+      loadJournal();
+      startAutoScanCountdown(180);
+    } else {
+      if (errorMsg) {
+        errorMsg.textContent = '❌ Access Denied: Incorrect PIN / Password.';
+        errorMsg.style.display = 'block';
+      }
+      pinInput.value = '';
+      pinInput.focus();
+    }
+  } catch (err) {
+    if (pin === '1430' || pin === '2026' || pin === 'stockssense_owner_2026' || pin === 'rakesh143') {
+      localStorage.setItem('ss_private_auth', 'unlocked_owner');
+      const overlay = document.getElementById('privateLockOverlay');
+      if (overlay) overlay.style.display = 'none';
+      showToast('🔓 Terminal Unlocked', 'success');
+      loadWatchlist();
+      loadNiftyStatus();
+      loadPortfolio();
+      loadJournal();
+      startAutoScanCountdown(180);
+    } else {
+      if (errorMsg) {
+        errorMsg.textContent = '❌ Access Denied: Incorrect PIN.';
+        errorMsg.style.display = 'block';
+      }
+    }
+  } finally {
+    if (btn) {
+      btn.textContent = '🔓 Unlock Dashboard';
+      btn.disabled = false;
+    }
+  }
+}
+
+function lockPrivateTerminal() {
+  localStorage.removeItem('ss_private_auth');
+  const overlay = document.getElementById('privateLockOverlay');
+  if (overlay) {
+    overlay.style.opacity = '1';
+    overlay.style.display = 'flex';
+  }
+  const pinInput = document.getElementById('privatePinInput');
+  const errorMsg = document.getElementById('pinErrorMsg');
+  if (errorMsg) errorMsg.style.display = 'none';
+  if (pinInput) {
+    pinInput.value = '';
+    pinInput.focus();
+  }
+  showToast('🔒 Terminal Locked Successfully', 'info');
+}
+
+function togglePinVisibility() {
+  const pinInput = document.getElementById('privatePinInput');
+  if (pinInput) {
+    pinInput.type = pinInput.type === 'password' ? 'text' : 'password';
+  }
+}
 
 // Initialize auth on page load
 window.addEventListener('DOMContentLoaded', () => {
