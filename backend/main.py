@@ -682,7 +682,7 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
 
     async def event_generator():
         queue = asyncio.Queue()
-        semaphore = asyncio.Semaphore(6)
+        semaphore = asyncio.Semaphore(3)
 
         async def worker(stock: dict, index: int):
             async with semaphore:
@@ -778,6 +778,13 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
             logger.warning("Telegram stream scan alert failed: %s", e)
 
         yield f"data: {_json.dumps({'type':'done','analyzed':total,'signals_count':signals_count,'qualified':qualified_count,'timestamp':datetime.utcnow().isoformat()})}\n\n"
+
+        # Explicitly release memory back to the OS
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
 
     return StreamingResponse(
         event_generator(),

@@ -13,10 +13,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# In-memory caches for fast scans
+# In-memory lightweight caches for fast scans (bounded size to prevent RAM growth)
 _tech_1h_cache: dict[str, tuple[float, dict]] = {}
 _tech_15m_cache: dict[str, tuple[float, dict]] = {}
-_data_5y_cache: dict[str, tuple[float, Optional[pd.DataFrame]]] = {}
+_data_5y_cache: dict[str, tuple[float, Optional[float], Optional[float], list[dict]]] = {}
 
 TECH_CACHE_TTL = 15    # 15 seconds live cache for real-time tick accuracy
 DATA5Y_CACHE_TTL = 3600 # 1 hour for 5Y historical daily candles
@@ -108,33 +108,56 @@ def analyze_15m(symbol: str) -> Optional[dict]:
             "is_bullish_15m":     is_bullish_15m,
             "is_bearish_15m":     is_bearish_15m,
         }
+        if len(_tech_15m_cache) > 80:
+            _tech_15m_cache.clear()
         _tech_15m_cache[symbol] = (now, result)
+        del df15, vwap15, rsi15, ema9_15, ema21_15
         return result
     except Exception as e:
         logger.error("15M analysis failed for %s: %s", symbol, e)
         return None
 
 
-def fetch_5y_data(symbol: str) -> Optional[pd.DataFrame]:
-    """Fetch 5-Year daily OHLCV data for historical graph and news reaction memory."""
+def fetch_5y_lightweight_summary(symbol: str) -> tuple[Optional[float], Optional[float], list[dict]]:
+    """Fetch and downsample 5-Year daily data into lightweight JSON (<2KB), avoiding heavy DataFrame RAM retention."""
     now = time.time()
     if symbol in _data_5y_cache:
-        ts, df = _data_5y_cache[symbol]
+        ts, high52, low52, data = _data_5y_cache[symbol]
         if now - ts < DATA5Y_CACHE_TTL:
-            return df
+            return high52, low52, data
 
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="5y", interval="1d")
-        if df.empty:
-            _data_5y_cache[symbol] = (now, None)
-            return None
+        if df is None or df.empty:
+            if len(_data_5y_cache) > 80:
+                _data_5y_cache.clear()
+            _data_5y_cache[symbol] = (now, None, None, [])
+            return None, None, []
+
         df.index = pd.to_datetime(df.index)
-        _data_5y_cache[symbol] = (now, df)
-        return df
+        one_year_cutoff = df.index.max() - pd.Timedelta(days=365)
+        one_year_df     = df[df.index >= one_year_cutoff]
+        week52_high = round(float(one_year_df["High"].max()), 2) if not one_year_df.empty else None
+        week52_low  = round(float(one_year_df["Low"].min()), 2) if not one_year_df.empty else None
+
+        # Sample to monthly points only (max ~60 points = ~2KB)
+        df_monthly     = df.resample("ME").agg({"Close": "last", "High": "max", "Low": "min", "Volume": "sum"}).dropna()
+        five_year_data = [
+            {"date": str(idx.date()), "close": round(float(row["Close"]), 2),
+             "high": round(float(row["High"]), 2), "low": round(float(row["Low"]), 2),
+             "volume": int(row["Volume"])}
+            for idx, row in df_monthly.iterrows()
+        ]
+
+        if len(_data_5y_cache) > 80:
+            _data_5y_cache.clear()
+        _data_5y_cache[symbol] = (now, week52_high, week52_low, five_year_data)
+        del df, one_year_df, df_monthly
+        return week52_high, week52_low, five_year_data
     except Exception as e:
-        logger.error("Failed to fetch 5Y data for %s: %s", symbol, e)
-        return None
+        logger.error("Failed to fetch 5Y lightweight data for %s: %s", symbol, e)
+        return None, None, []
 
 
 # ─────────────────────────── INDICATORS ────────────────────────────
@@ -258,24 +281,8 @@ def analyze_1h(symbol: str) -> Optional[dict]:
     target1_sell = round(current_price - sell_risk * 1.8, 2)
     target2_sell = round(current_price - sell_risk * 3.0, 2)
 
-    # 52-week High/Low from 5Y data
-    df5y = fetch_5y_data(symbol)
-    week52_high = week52_low = None
-    five_year_data = []
-    if df5y is not None and not df5y.empty:
-        one_year_cutoff = df5y.index.max() - pd.Timedelta(days=365)
-        one_year_df     = df5y[df5y.index >= one_year_cutoff]
-        if not one_year_df.empty:
-            week52_high = round(float(one_year_df["High"].max()), 2)
-            week52_low  = round(float(one_year_df["Low"].min()), 2)
-        # Prepare lightweight 5-year graph data (monthly sampled)
-        df_monthly     = df5y.resample("ME").agg({"Close": "last", "High": "max", "Low": "min", "Volume": "sum"}).dropna()
-        five_year_data = [
-            {"date": str(idx.date()), "close": round(float(row["Close"]), 2),
-             "high": round(float(row["High"]), 2), "low": round(float(row["Low"]), 2),
-             "volume": int(row["Volume"])}
-            for idx, row in df_monthly.iterrows()
-        ]
+    # 52-week High/Low and 5Y lightweight sampled points
+    week52_high, week52_low, five_year_data = fetch_5y_lightweight_summary(symbol)
 
     # Check Open = High (Institutional Selling Trap Flag)
     day_open = float(df["Open"].iloc[0]) if "Open" in df else current_price
@@ -307,5 +314,8 @@ def analyze_1h(symbol: str) -> Optional[dict]:
         "week52_low":      week52_low,
         "five_year_data":  five_year_data,
     }
+    if len(_tech_1h_cache) > 80:
+        _tech_1h_cache.clear()
     _tech_1h_cache[symbol] = (now, result)
+    del df, vwap, rsi, ema9, ema21, atr
     return result
