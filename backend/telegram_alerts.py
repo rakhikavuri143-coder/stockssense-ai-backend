@@ -239,3 +239,33 @@ def alert_guard_blocked(symbol: str, guard_name: str, reason: str):
         f"\n💡 <i>Trade rejected to protect your capital.</i>"
     )
     send_telegram_message(msg)
+
+
+# ─────────────────────── WEEKLY QUANT AUDIT REPORT ───────────────────────
+
+def alert_weekly_audit(report: dict):
+    """Send Saturday Weekly Quant Audit Card to Telegram."""
+    pnl_emoji = "🟢" if report.get("net_pnl", 0) >= 0 else "🔴"
+    reasons = report.get("reasons", [])
+    clean_reasons = [r.replace("<", "&lt;").replace(">", "&gt;") for r in reasons]
+    reasons_str = "\n".join([f"• {r}" for r in clean_reasons]) if clean_reasons else "• Baseline parameters maintained."
+
+    msg = (
+        f"<b>📊 StocksSense AI — Weekly Quant Audit Card</b>\n"
+        f"<i>{report.get('timestamp', _ist_now())}</i>\n"
+        f"🗓️ <b>Period:</b> {report.get('period', 'Past 7 Days')}\n"
+        f"{'=' * 32}\n"
+        f"📈 <b>Total Trades:</b> {report.get('total_trades', 0)}\n"
+        f"🟢 <b>Wins:</b> {report.get('wins', 0)} | 🔴 <b>Losses:</b> {report.get('losses', 0)}\n"
+        f"🎯 <b>Win Rate:</b> {report.get('win_rate', 0.0)}%\n"
+        f"💰 <b>Weekly Net P&L:</b> <b>{pnl_emoji} ₹{report.get('net_pnl', 0.0):+,.2f}</b>\n"
+        f"{'=' * 32}\n"
+        f"⚙️ <b>Auto-Tuning Parameter Adjustments:</b>\n"
+        f"• <b>Confidence Gate:</b> {report.get('old_confidence')}% → <b>{report.get('new_confidence')}%</b>\n"
+        f"• <b>ATR SL Multiplier:</b> {report.get('old_atr_mult')}x → <b>{report.get('new_atr_mult')}x</b>\n"
+        f"\n<b>💡 AI Quant Audit Notes:</b>\n"
+        f"{reasons_str}\n"
+        f"\n🚀 <i>System auto-tuned & ready for Monday Market Open!</i>"
+    )
+    send_telegram_message(msg)
+

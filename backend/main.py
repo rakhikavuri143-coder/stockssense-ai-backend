@@ -243,6 +243,20 @@ async def auto_exit_monitor_job():
     finally:
         db.close()
 
+async def weekly_quant_audit_job():
+    """Auto-run Saturday Weekly Quant Audit & Strategy Self-Tuning at 10:00 AM IST."""
+    logger.info("🤖 Scheduled Saturday Quant Audit Triggered.")
+    db_gen = get_db()
+    db: Session = next(db_gen)
+    try:
+        from backend.weekly_optimizer import run_weekly_quant_audit
+        report = await asyncio.to_thread(run_weekly_quant_audit, db)
+        logger.info("✅ Weekly Quant Audit Job complete: %s", report.get("last_audit_summary"))
+    except Exception as e:
+        logger.error("❌ Weekly Quant Audit Job failed: %s", e)
+    finally:
+        db.close()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -256,10 +270,12 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(midday_scan_job, "cron", hour=6, minute=0, id="midday_scan")
     # 3:30 PM IST = 10:00 AM UTC (market close auto-save)
     scheduler.add_job(daily_save_job, "cron", hour=10, minute=0, id="daily_save")
+    # Saturday 10:00 AM IST = 4:30 AM UTC (Saturday Weekly Quant Audit & Strategy Tuning)
+    scheduler.add_job(weekly_quant_audit_job, "cron", day_of_week="sat", hour=4, minute=30, id="weekly_quant_audit", max_instances=1, coalesce=True)
     scheduler.start()
     logger.info("🚀 Indian Stock Market AI Agent started!")
     logger.info("⚡ Live Paper Position Monitor: Active (Every 15 seconds)")
-    logger.info("📅 Scheduled: Market Open Scan @ 9:15 AM IST | Mid-day Scan @ 11:30 AM IST | Auto-Save @ 3:30 PM IST")
+    logger.info("📅 Scheduled: Market Open Scan @ 9:15 AM IST | Mid-day Scan @ 11:30 AM IST | Auto-Save @ 3:30 PM IST | Saturday Audit @ 10:00 AM IST")
     yield
     scheduler.shutdown()
 
@@ -1245,6 +1261,32 @@ async def admin_get_users(key: str = ""):
         })
     stats = get_summary_stats()
     return {"stats": stats, "users": enriched}
+
+
+# ─────────────────────── API: STRATEGY & WEEKLY AUDIT ───────────────────────
+
+@app.get("/api/strategy/config")
+async def get_strategy_configuration():
+    """Return active dynamic strategy configuration parameters."""
+    from backend.weekly_optimizer import get_strategy_config
+    return get_strategy_config()
+
+
+@app.post("/api/admin/trigger-weekly-audit")
+async def trigger_weekly_audit_endpoint():
+    """Manually trigger Saturday Quant Audit & Strategy Self-Tuning on demand."""
+    db_gen = get_db()
+    db: Session = next(db_gen)
+    try:
+        from backend.weekly_optimizer import run_weekly_quant_audit
+        report = await asyncio.to_thread(run_weekly_quant_audit, db)
+        return {"status": "success", "report": report}
+    except Exception as e:
+        logger.error("Manual trigger of weekly audit failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 
 
 # ─────────────────────────── ENTRY POINT ────────────────────────────

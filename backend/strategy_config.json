@@ -1,0 +1,17 @@
+{
+  "confidence_threshold": 80.0,
+  "atr_stoploss_multiplier": 1.5,
+  "max_daily_trades": 5,
+  "risk_per_trade_percent": 2.0,
+  "sector_weights": {
+    "IT": 1.0,
+    "BANKING": 1.0,
+    "AUTO": 1.0,
+    "PHARMA": 1.0,
+    "METALS": 1.0,
+    "ENERGY": 1.0,
+    "CONSUMER": 1.0
+  },
+  "last_audit_timestamp": "2026-09-01 07:55 PM IST",
+  "last_audit_summary": "Audit completed cleanly."
+}
