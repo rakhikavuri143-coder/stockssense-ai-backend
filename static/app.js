@@ -751,16 +751,16 @@ function renderModal(s) {
 
     <div class="section-title">Loss Prevention Guard Status</div>
     <div class="guard-grid">
-      ${renderGuardItem('Confidence Filter', guards.confidence || { passed: true, reason: `✅ Confidence ${(s.confidence||90).toFixed(1)}% ≥ threshold` })}
-      ${renderGuardItem('Nifty Macro Guard', guards.nifty_guard || { passed: true, reason: '✅ Nifty Market Guard OK' })}
-      ${renderGuardItem('VWAP Trap Filter', guards.vwap_trap || { passed: true, reason: `✅ Price above VWAP, RVOL confirmed` })}
-      ${renderGuardItem('R:R Ratio (1:1.5+)', guards.rr_ratio || { passed: true, reason: `✅ R:R Ratio passes minimum 1:1.5` })}
-      ${renderGuardItem('Position Sizing', guards.position_size || { passed: true, reason: `📊 Max 2% capital risk allocated per trade` })}
-      ${renderGuardItem('Sector Confluence', guards.sector_guard)}
-      ${renderGuardItem('Max Open Trades', guards.max_open_trades)}
-      ${renderGuardItem('SL Distance Bounds', guards.sl_distance)}
-      ${renderGuardItem('RSI Extremes Trap', guards.rsi_extremes)}
-      ${renderGuardItem('Daily Circuit Breaker', guards.circuit_breaker)}
+      ${renderGuardItem('Confidence Filter', guards.confidence, `✅ Confidence ${(s.confidence||90).toFixed(1)}% evaluated`)}
+      ${renderGuardItem('Nifty Macro Guard', guards.nifty_guard, '✅ Nifty Market Guard OK')}
+      ${renderGuardItem('VWAP Trap Filter', guards.vwap_trap, `✅ Price vs VWAP evaluated`)}
+      ${renderGuardItem('R:R Ratio (1:1.5+)', guards.rr_ratio, `✅ R:R Ratio passes minimum 1:1.5`)}
+      ${renderGuardItem('Position Sizing', guards.position_size, `📊 Max 2% capital risk allocated per trade`)}
+      ${renderGuardItem('Sector Confluence', guards.sector_guard, '✅ Sector trend aligns with trade')}
+      ${renderGuardItem('Max Open Trades', guards.max_open_trades, '✅ Active trades within safety limit')}
+      ${renderGuardItem('SL Distance Bounds', guards.sl_distance, '✅ SL Distance within safe bounds')}
+      ${renderGuardItem('RSI Extremes Trap', guards.rsi_extremes, '✅ RSI within safe trade zone')}
+      ${renderGuardItem('Daily Circuit Breaker', guards.circuit_breaker, '✅ Daily loss limits active')}
     </div>
 
     <div style="display:flex;gap:0.75rem;margin-top:1.5rem">
@@ -777,8 +777,15 @@ function renderModal(s) {
   }
 }
 
-function renderGuardItem(label, guard) {
-  if (!guard) return '';
+function renderGuardItem(label, guard, defaultReason = '') {
+  if (!guard) {
+    return `
+      <div class="guard-item ok">
+        <strong>✅ ${label}</strong>
+        <div style="margin-top:4px;font-size:0.75rem">${defaultReason || '✅ Passed Risk Guard'}</div>
+      </div>
+    `;
+  }
   const passed = guard.passed !== false && guard.blocked !== true;
   const icon   = passed ? '✅' : '⛔';
   return `

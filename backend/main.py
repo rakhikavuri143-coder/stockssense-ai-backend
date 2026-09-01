@@ -472,7 +472,9 @@ async def analyze_stocks(req: AnalyzeRequest, db: Session = Depends(get_db)):
                 rsi_15m=rsi_15m_val,
                 losses_today=losses_today,
                 is_scalp=(req.category == "fast_scalp"),
-            ) if signal in ("BUY", "SELL") else {"approved": False}
+            )
+            if signal == "AVOID":
+                guards["approved"] = False
 
             approved = guards.get("approved", False)
 
@@ -597,13 +599,29 @@ def _analyze_single_stock(stock: dict, threshold: float, category: str = "normal
     else:
         sl = technical.get("sl_buy", 0.0);  t1 = technical.get("target1_buy", 0.0);  t2 = technical.get("target2_buy", 0.0)
 
+    rsi_15m_val = float(technical.get("rsi_15m") or technical.get("rsi") or 50.0)
     guards = run_all_guards(
-        signal=signal, confidence=ai_result["confidence"],
-        current_price=technical["current_price"], entry_price=technical["current_price"],
-        stop_loss=sl, target1=t1, vwap=technical["vwap"], rvol=technical["rvol"],
-        capital=PAPER_CAPITAL, confidence_threshold=threshold,
+        signal=signal,
+        confidence=ai_result["confidence"],
+        current_price=technical["current_price"],
+        entry_price=technical["current_price"],
+        stop_loss=sl,
+        target1=t1,
+        vwap=technical["vwap"],
+        rvol=technical["rvol"],
+        capital=PAPER_CAPITAL,
+        confidence_threshold=threshold,
+        sector=sector,
+        rsi_15m=rsi_15m_val,
         is_scalp=(category == "fast_scalp"),
-    ) if signal in ("BUY", "SELL") else {"approved": False}
+    )
+    if signal == "AVOID":
+        guards["approved"] = False
+        if confidence < threshold:
+            guards["confidence"] = {
+                "passed": False,
+                "reason": f"⛔ Confidence ({confidence:.1f}%) < {threshold:.0f}% threshold — Filtered Out for safety",
+            }
 
     entry_low  = round(technical["current_price"] * 0.998, 2)
     entry_high = round(technical["current_price"] * 1.002, 2)
