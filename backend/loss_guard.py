@@ -93,6 +93,8 @@ def check_vwap_trap_filter(
 
 # ─────────────────────────── GUARD 3: POSITION SIZING ────────────────────────────
 
+MAX_HARD_SL_RUPEES = 300.0
+
 def calculate_position_size(
     capital: float,
     entry_price: float,
@@ -101,10 +103,11 @@ def calculate_position_size(
 ) -> dict:
     """
     Guard 4: Calculate exact share quantity based on capital risk.
-    Risks max risk_pct% of total capital per trade.
+    Risks max risk_pct% of total capital per trade, HARD-CAPPED at ₹300 max loss per trade!
     """
-    risk_amount   = capital * (risk_pct / 100)
-    sl_distance   = abs(entry_price - stop_loss)
+    pct_risk_amount = capital * (risk_pct / 100)
+    risk_amount     = min(pct_risk_amount, MAX_HARD_SL_RUPEES)
+    sl_distance     = abs(entry_price - stop_loss)
     if sl_distance == 0:
         return {"quantity": 0, "risk_amount": 0.0, "trade_value": 0.0, "reason": "⚠️ SL = Entry Price, cannot size position"}
     quantity      = max(1, int(risk_amount / sl_distance))
@@ -117,7 +120,7 @@ def calculate_position_size(
         "reason":      (
             f"📊 Position Size: {quantity} shares @ ₹{entry_price:.2f} "
             f"| Trade Value: ₹{trade_value:,.2f} "
-            f"| Max Risk: ₹{actual_risk:.2f} ({risk_pct}% of ₹{capital:,.2f} capital)"
+            f"| Max Risk: ₹{actual_risk:.2f} (Capped at ₹{MAX_HARD_SL_RUPEES:.0f} Max SL)"
         ),
     }
 

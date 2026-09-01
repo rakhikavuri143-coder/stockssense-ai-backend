@@ -295,6 +295,14 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
         except Exception as ge:
             logger.warning("Live circuit monitor failed: %s", ge)
 
+        # 🚨 Hard Rupee SL Circuit Breaker (Max ₹300 Loss Cap per live trade)
+        current_pnl = (price - trade.entry_price) * trade.quantity if trade.action == "BUY" else (trade.entry_price - price) * trade.quantity
+        if current_pnl <= -300.0:
+            res = close_live_position(db, symbol, price, exit_reason="HARD_SL_CIRCUIT_BREAKER")
+            results.append(res)
+            logger.info("🚨 Hard ₹300 SL Circuit Breaker triggered for LIVE trade %s (PnL: ₹%.2f). Squareoff executed.", symbol, current_pnl)
+            continue
+
         # Standard Target/SL logic
         if trade.action == "BUY":
             if price >= trade.target2:
