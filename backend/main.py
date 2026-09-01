@@ -623,6 +623,7 @@ def _analyze_single_stock(stock: dict, threshold: float, category: str = "normal
         "stop_loss":         round(sl, 2),
         "rr_ratio":          guards.get("rr_ratio", {}).get("rr_ratio", 0),
         "sl_hit_prob":       ai_result["sl_hit_probability"],
+        "sl_hit_probability":ai_result["sl_hit_probability"],
         "news_headline":     headlines[0] if headlines else "",
         "news_summary":      ai_result["news_summary"],
         "technical_summary": ai_result.get("technical_summary", ""),
@@ -630,7 +631,15 @@ def _analyze_single_stock(stock: dict, threshold: float, category: str = "normal
         "risk_level":        ai_result.get("risk_level", "MEDIUM"),
         "approved":          guards.get("approved", False),
         "guards":            guards,
+        "guard_details":     guards,
         "historical_note":   historical.get("historical_note", ""),
+        "trend_1h":          technical.get("trend_1h", "NEUTRAL"),
+        "rsi":               technical.get("rsi", 50.0),
+        "vwap":              technical.get("vwap", technical["current_price"]),
+        "rvol":              technical.get("rvol", 1.0),
+        "week52_high":       technical.get("week52_high"),
+        "week52_low":        technical.get("week52_low"),
+        "five_year_data":    technical.get("five_year_data", []),
     }
 
 
