@@ -497,19 +497,20 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                         logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_buy, trade_value)
                         continue
 
-            # ══ NIFTY 50: 300 PROFIT LOCK GUARD ══════════════════════════
-            if symbol in nifty50_symbols:
-                peak_pnl_nifty = _peak_pnl.get(trade_id, 0.0)
-                if current_pnl_buy > peak_pnl_nifty:
-                    _peak_pnl[trade_id] = current_pnl_buy
-                    peak_pnl_nifty = current_pnl_buy
-                # If peak profit crossed ₹300 and retreated to ₹150 → Lock ₹150 profit
-                if peak_pnl_nifty >= 300.0 and current_pnl_buy <= 150.0:
-                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK_300")
+            # ══ DYNAMIC TRAILING PROFIT LOCK (+₹400 PEAK ACTIVATION, ₹200 TRAILING FLOOR) ══
+            peak_pnl_val = _peak_pnl.get(trade_id, 0.0)
+            if current_pnl_buy > peak_pnl_val:
+                _peak_pnl[trade_id] = current_pnl_buy
+                peak_pnl_val = current_pnl_buy
+
+            if peak_pnl_val >= 400.0:
+                trailing_floor = max(200.0, peak_pnl_val - 200.0)
+                if current_pnl_buy <= trailing_floor:
+                    res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
                     results.append(res)
                     _peak_prices.pop(trade_id, None)
                     _peak_pnl.pop(trade_id, None)
-                    logger.info("🔒 Nifty 300 Profit Lock: %s Peak=₹%.0f Now=₹%.0f → Locked ₹150!", symbol, peak_pnl_nifty, current_pnl_buy)
+                    logger.info("💰 Dynamic Profit Lock: %s Peaked at +₹%.0f, Exited at +₹%.0f (Floor: +₹%.0f)", symbol, peak_pnl_val, current_pnl_buy, trailing_floor)
                     continue
 
             # ══ BUDGET STOCKS SPECIAL RULES ═══════════════════════════════
@@ -602,19 +603,20 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                         logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_sell, trade_value)
                         continue
 
-            # ══ NIFTY 50: 300 PROFIT LOCK GUARD ══════════════════════════
-            if symbol in nifty50_symbols:
-                peak_pnl_nifty = _peak_pnl.get(trade_id, 0.0)
-                if current_pnl_sell > peak_pnl_nifty:
-                    _peak_pnl[trade_id] = current_pnl_sell
-                    peak_pnl_nifty = current_pnl_sell
-                # If peak profit crossed ₹300 and retreated to ₹150 → Lock ₹150 profit
-                if peak_pnl_nifty >= 300.0 and current_pnl_sell <= 150.0:
-                    res = close_paper_position(db, symbol, price, exit_reason="PROFIT_RETREAT_LOCK_300")
+            # ══ DYNAMIC TRAILING PROFIT LOCK (+₹400 PEAK ACTIVATION, ₹200 TRAILING FLOOR) ══
+            peak_pnl_val = _peak_pnl.get(trade_id, 0.0)
+            if current_pnl_sell > peak_pnl_val:
+                _peak_pnl[trade_id] = current_pnl_sell
+                peak_pnl_val = current_pnl_sell
+
+            if peak_pnl_val >= 400.0:
+                trailing_floor = max(200.0, peak_pnl_val - 200.0)
+                if current_pnl_sell <= trailing_floor:
+                    res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
                     results.append(res)
                     _peak_prices.pop(trade_id, None)
                     _peak_pnl.pop(trade_id, None)
-                    logger.info("🔒 Nifty 300 Profit Lock: %s Peak=₹%.0f Now=₹%.0f → Locked ₹150!", symbol, peak_pnl_nifty, current_pnl_sell)
+                    logger.info("💰 Dynamic Profit Lock: %s Peaked at +₹%.0f, Exited at +₹%.0f (Floor: +₹%.0f)", symbol, peak_pnl_val, current_pnl_sell, trailing_floor)
                     continue
 
             # ══ BUDGET STOCKS SPECIAL RULES ═══════════════════════════════

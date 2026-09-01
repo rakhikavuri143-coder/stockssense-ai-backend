@@ -257,11 +257,14 @@ def close_live_position(
     }
 
 
+_live_peak_pnl: dict[int, float] = {}
+
 def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[dict]:
     """
     Check open live positions against live prices and exit on triggers.
     Runs in the 15-second scheduler job.
     """
+    global _live_peak_pnl
     open_trades = db.query(LiveTrade).filter(LiveTrade.status == "OPEN").all()
     results = []
     
@@ -277,10 +280,13 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
         if price is None:
             continue
 
+        trade_id = trade.id
+
         # EOD Square-off
         if is_eod_squareoff_time:
             res = close_live_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
             results.append(res)
+            _live_peak_pnl.pop(trade_id, None)
             continue
 
         # 🛡️ Guard #17: Live Emergency Exit check
@@ -290,6 +296,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
             if guard_status == "EMERGENCY_EXIT":
                 res = close_live_position(db, symbol, price, exit_reason="CIRCUIT_EMERGENCY_EXIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
                 logger.info("🚨 Guard #17 Live: Emergency exit triggered for %s.", symbol)
                 continue
         except Exception as ge:
@@ -300,30 +307,52 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
         if current_pnl <= -300.0:
             res = close_live_position(db, symbol, price, exit_reason="HARD_SL_CIRCUIT_BREAKER")
             results.append(res)
+            _live_peak_pnl.pop(trade_id, None)
             logger.info("🚨 Hard ₹300 SL Circuit Breaker triggered for LIVE trade %s (PnL: ₹%.2f). Squareoff executed.", symbol, current_pnl)
             continue
+
+        # ══ DYNAMIC TRAILING PROFIT LOCK (+₹400 PEAK ACTIVATION, ₹200 TRAILING FLOOR) ══
+        peak_pnl_val = _live_peak_pnl.get(trade_id, 0.0)
+        if current_pnl > peak_pnl_val:
+            _live_peak_pnl[trade_id] = current_pnl
+            peak_pnl_val = current_pnl
+
+        if peak_pnl_val >= 400.0:
+            trailing_floor = max(200.0, peak_pnl_val - 200.0)
+            if current_pnl <= trailing_floor:
+                res = close_live_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+                results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
+                logger.info("💰 LIVE Dynamic Profit Lock: %s Peaked at +₹%.0f, Exited at +₹%.0f (Floor: +₹%.0f)", symbol, peak_pnl_val, current_pnl, trailing_floor)
+                continue
 
         # Standard Target/SL logic
         if trade.action == "BUY":
             if price >= trade.target2:
                 res = close_live_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
             elif price >= trade.target1:
                 res = close_live_position(db, symbol, price, exit_reason="T1_HIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
             elif price <= trade.stop_loss:
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
         elif trade.action == "SELL":
             if price <= trade.target2:
                 res = close_live_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
             elif price <= trade.target1:
                 res = close_live_position(db, symbol, price, exit_reason="T1_HIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
             elif price >= trade.stop_loss:
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
+                _live_peak_pnl.pop(trade_id, None)
 
     return results
 
