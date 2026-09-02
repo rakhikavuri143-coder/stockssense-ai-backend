@@ -168,42 +168,27 @@ async def auto_exit_monitor_job():
         if not symbols:
             return {}
         import yfinance as yf
+        from concurrent.futures import ThreadPoolExecutor
         prices = {}
-        # Try bulk download first (extremely fast for multiple tickers)
-        try:
-            tickers_str = " ".join(symbols)
-            # Fetch last few minutes of data
-            data = yf.download(tickers=symbols, period="1d", interval="1m", group_by="ticker", progress=False, threads=True)
-            for sym in symbols:
-                try:
-                    if len(symbols) > 1:
-                        if sym in data.columns.levels[0]:
-                            ticker_df = data[sym].dropna(subset=["Close"])
-                            if not ticker_df.empty:
-                                prices[sym] = float(ticker_df["Close"].iloc[-1])
-                    else:
-                        ticker_df = data.dropna(subset=["Close"])
-                        if not ticker_df.empty:
-                            prices[sym] = float(ticker_df["Close"].iloc[-1])
-                except Exception as sym_ex:
-                    logger.debug("Failed to extract price for %s from bulk download: %s", sym, sym_ex)
-        except Exception as ex:
-            logger.warning("Bulk price fetch failed: %s", ex)
 
-        # Fallback to fast fast_info / sequential if bulk fails or misses a symbol
-        for sym in symbols:
-            if sym not in prices:
-                try:
-                    ticker = yf.Ticker(sym)
-                    fast_info = getattr(ticker, "fast_info", None)
-                    if fast_info and getattr(fast_info, "last_price", None):
-                        prices[sym] = float(fast_info.last_price)
-                    else:
-                        hist = ticker.history(period="1d", interval="1m")
-                        if not hist.empty:
-                            prices[sym] = float(hist["Close"].iloc[-1])
-                except Exception as ex:
-                    logger.warning("Sequential fallback fetch failed for %s: %s", sym, ex)
+        def fetch_single_price(sym):
+            try:
+                ticker = yf.Ticker(sym)
+                fast_info = getattr(ticker, "fast_info", None)
+                if fast_info and getattr(fast_info, "last_price", None):
+                    return sym, float(fast_info.last_price)
+                hist = ticker.history(period="1d", interval="1m")
+                if not hist.empty:
+                    return sym, float(hist["Close"].iloc[-1])
+            except Exception as ex:
+                logger.warning("Fast price fetch failed for %s: %s", sym, ex)
+            return sym, None
+
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(symbols)))) as executor:
+            results = executor.map(fetch_single_price, symbols)
+            for sym, price in results:
+                if price is not None:
+                    prices[sym] = price
         return prices
 
     db_gen = get_db()
