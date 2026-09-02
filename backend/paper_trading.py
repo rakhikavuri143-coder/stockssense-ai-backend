@@ -274,14 +274,19 @@ def place_paper_order(
         trade_value = round(entry_price * quantity, 2)
         logger.info("Qty risk-capped to %d (max 15%% capital allocation at ₹%.2f)", quantity, max_trade_alloc)
 
-    # 🛡️ Hard Rupee SL Quantity Cap (Enforce Max ₹300 Loss Potential at Order Placement)
-    sl_distance = abs(entry_price - stop_loss)
-    if sl_distance > 0:
-        max_sl_qty = max(1, int(300.0 / sl_distance))
-        if quantity > max_sl_qty:
-            quantity = max_sl_qty
-            trade_value = round(entry_price * quantity, 2)
-            logger.info("🛡️ Qty hard-capped from request to %d shares for %s to enforce Max ₹300 Loss Limit (SL Dist: ₹%.2f)", quantity, symbol, sl_distance)
+    # 🛡️ Dynamic SL Price Recalibration (Enforce Max ₹300 Loss Cap for any Quantity)
+    if quantity > 0:
+        max_price_move = 300.0 / quantity
+        if action == "BUY":
+            dynamic_sl = round(entry_price - max_price_move, 2)
+            if dynamic_sl > stop_loss:  # Tighten SL to exact ₹300 risk boundary
+                logger.info("🛡️ SL tightened for %s from ₹%.2f to ₹%.2f (Qty: %d -> Max ₹300 Loss)", symbol, stop_loss, dynamic_sl, quantity)
+                stop_loss = dynamic_sl
+        elif action == "SELL":
+            dynamic_sl = round(entry_price + max_price_move, 2)
+            if dynamic_sl < stop_loss:  # Tighten SL to exact ₹300 risk boundary
+                logger.info("🛡️ SL tightened for %s from ₹%.2f to ₹%.2f (Qty: %d -> Max ₹300 Loss)", symbol, stop_loss, dynamic_sl, quantity)
+                stop_loss = dynamic_sl
 
     if trade_value > balance:
         return {
