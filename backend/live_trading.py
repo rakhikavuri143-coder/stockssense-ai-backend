@@ -112,6 +112,14 @@ def place_live_order(
     except Exception as ge:
         logger.warning("Circuit check failed for live order %s: %s", symbol, ge)
 
+    # 5.5. 🛡️ Hard Rupee SL Quantity Cap (Enforce Max ₹300 Loss Potential at Order Placement)
+    sl_distance = abs(entry_price - stop_loss)
+    if sl_distance > 0:
+        max_sl_qty = max(1, int(300.0 / sl_distance))
+        if quantity > max_sl_qty:
+            logger.info("🛡️ LIVE Qty hard-capped from %d to %d shares for %s to enforce Max ₹300 Loss Limit (SL Dist: ₹%.2f)", quantity, max_sl_qty, symbol, sl_distance)
+            quantity = max_sl_qty
+
     # 6. Place order on SmartAPI
     # Target and SL logic mapping
     logger.info("Executing LIVE %s order for %d shares of %s", action, quantity, trading_symbol)
