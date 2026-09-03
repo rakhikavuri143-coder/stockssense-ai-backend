@@ -240,6 +240,9 @@ def close_live_position(
         pnl = round((entry_price - exit_price) * quantity, 2)
         pnl_pct = round(((entry_price - exit_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
 
+    if pnl <= -295.0 and exit_reason in ("MANUAL", "SL_HIT"):
+        exit_reason = "HARD_SL_CIRCUIT_BREAKER"
+
     # Save to DB
     trade.exit_price  = exit_price
     trade.pnl         = pnl

@@ -1394,7 +1394,21 @@ async function loadTrades() {
     body.innerHTML = data.trades.filter(t => t.status !== 'OPEN').map(t => {
       const pnlSign = (t.pnl || 0) >= 0 ? '+' : '';
       const pnlCls  = (t.pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
-      const statusEmoji = t.status === 'T2_HIT' ? '🎯🎯' : t.status === 'T1_HIT' ? '🎯' : t.status === 'SL_HIT' ? '🔴' : '⚪';
+      
+      let displayStatus = t.status;
+      let statusEmoji = '⚪';
+      
+      if (t.status === 'HARD_SL_CIRCUIT_BREAKER' || (t.pnl && t.pnl <= -295)) {
+        statusEmoji = '🔴';
+        displayStatus = 'HARD_SL_CIRCUIT_BREAKER';
+      } else if (t.status === 'T2_HIT') {
+        statusEmoji = '🎯🎯';
+      } else if (t.status === 'T1_HIT') {
+        statusEmoji = '🎯';
+      } else if (t.status === 'SL_HIT') {
+        statusEmoji = '🔴';
+      }
+
       return `
         <tr>
           <td>${t.symbol.replace('.NS','')}</td>
@@ -1403,7 +1417,7 @@ async function loadTrades() {
           <td>${t.exit_price ? '₹'+t.exit_price.toFixed(2) : '—'}</td>
           <td>${t.quantity}</td>
           <td class="${pnlCls}">${pnlSign}₹${(t.pnl||0).toFixed(2)} (${pnlSign}${(t.pnl_percent||0).toFixed(2)}%)</td>
-          <td>${statusEmoji} ${t.status}</td>
+          <td>${statusEmoji} ${displayStatus}</td>
           <td>${t.trade_date}</td>
         </tr>
       `;
