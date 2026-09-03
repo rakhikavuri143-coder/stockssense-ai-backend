@@ -173,7 +173,12 @@ async def auto_exit_monitor_job():
 
         def fetch_single_price(sym):
             try:
-                ticker = yf.Ticker(sym)
+                import requests
+                sess = requests.Session()
+                sess.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                })
+                ticker = yf.Ticker(sym, session=sess)
                 fi = getattr(ticker, "fast_info", None)
                 if fi:
                     p = getattr(fi, "lastPrice", None) or getattr(fi, "last_price", None)
