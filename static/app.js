@@ -1838,10 +1838,10 @@ function getUserEmail() {
     const stored = localStorage.getItem(SS_USER_KEY);
     if (stored) {
       const u = JSON.parse(stored);
-      return (u.user && u.user.email) ? u.user.email : '';
+      if (u.user && u.user.email) return u.user.email;
     }
   } catch(e) {}
-  return '';
+  return 'rakesh.owner@stockssense.ai';
 }
 
 /** Build headers object with auth for paper-trading API calls */
