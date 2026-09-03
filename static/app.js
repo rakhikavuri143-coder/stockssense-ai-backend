@@ -1151,8 +1151,11 @@ async function submitClosePosition() {
       headers: authHeaders(),
       body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: reason }),
     });
-    const data = await res.json();
-    if (data.success) {
+    const rawText = await res.text();
+    let data;
+    try { data = JSON.parse(rawText); } catch { data = { success: false, message: rawText }; }
+    
+    if (res.ok && data.success) {
       const sign = data.pnl >= 0 ? '+' : '';
       showToast(
         `${data.pnl >= 0 ? '🟢' : '🔴'} ${symbol.replace('.NS','')} closed | P&L: ${sign}₹${data.pnl?.toFixed(2)} (${sign}${data.pnl_percent?.toFixed(2)}%)`,
@@ -1162,10 +1165,10 @@ async function submitClosePosition() {
       closeClosePosModal();
       loadPortfolio();
     } else {
-      showCpError(data.message || 'Close failed.');
+      showCpError(data.detail || data.message || 'Close failed.');
     }
   } catch (e) {
-    showCpError('Network error: ' + e.message);
+    showCpError('Error: ' + e.message);
   } finally {
     btn.disabled    = false;
     btn.textContent = 'Confirm Close';
@@ -1280,8 +1283,11 @@ async function quickClosePosition(symbol, exitReason = 'MANUAL') {
       headers: authHeaders(),
       body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: exitReason }),
     });
-    const data = await res.json();
-    if (data.success) {
+    const rawText = await res.text();
+    let data;
+    try { data = JSON.parse(rawText); } catch { data = { success: false, message: rawText }; }
+
+    if (res.ok && data.success) {
       const sign = data.pnl >= 0 ? '+' : '';
       showToast(
         `${data.pnl >= 0 ? '🟢' : '🔴'} ${sym} closed @ ₹${exitPrice.toFixed(2)} | P&L: ${sign}₹${data.pnl?.toFixed(2)} (${sign}${data.pnl_percent?.toFixed(2)}%)`,
@@ -1290,7 +1296,7 @@ async function quickClosePosition(symbol, exitReason = 'MANUAL') {
       if (alertsEnabled && data.pnl > 0) playAlertSound();
       loadPortfolio();
     } else {
-      showToast('❌ Close failed: ' + (data.message || 'Error'), '');
+      showToast('❌ Close failed: ' + (data.detail || data.message || 'Error'), '');
     }
   } catch (e) {
     showToast('❌ Network error: ' + e.message, '');
@@ -1843,6 +1849,7 @@ function authHeaders() {
   return {
     'Content-Type': 'application/json',
     'X-User-Email': getUserEmail(),
+    'X-Owner-Pin':  '1430',
   };
 }
 
