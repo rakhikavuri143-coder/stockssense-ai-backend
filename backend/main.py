@@ -55,6 +55,9 @@ def verify_user_login(request: Request):
         email = "rakesh.owner@stockssense.ai"
     return email
 
+# Alias for backwards compatibility with route annotations
+require_authenticated_user = verify_user_login
+
 
 # ─────────────────────────── SCHEDULER ────────────────────────────
 scheduler = AsyncIOScheduler()
