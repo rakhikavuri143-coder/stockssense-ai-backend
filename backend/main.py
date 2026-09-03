@@ -172,6 +172,21 @@ async def auto_exit_monitor_job():
         prices = {}
 
         def fetch_single_price(sym):
+            # 1. Direct Yahoo REST Endpoint (ultra-fast, 50ms, zero dependency)
+            try:
+                import urllib.request, json
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    raw = json.loads(resp.read().decode())
+                    meta = raw.get("chart", {}).get("result", [{}])[0].get("meta", {})
+                    p = meta.get("regularMarketPrice")
+                    if p and isinstance(p, (int, float)) and p > 0:
+                        return sym, float(p)
+            except Exception as ex:
+                logger.warning("Direct Yahoo REST fetch failed for %s: %s", sym, ex)
+
+            # 2. Fallback to yfinance
             try:
                 import requests
                 sess = requests.Session()
@@ -189,9 +204,6 @@ async def auto_exit_monitor_job():
                 hist = ticker.history(period="1d", interval="1m")
                 if not hist.empty:
                     return sym, float(hist["Close"].iloc[-1])
-                hist2 = ticker.history(period="5d")
-                if not hist2.empty:
-                    return sym, float(hist2["Close"].iloc[-1])
             except Exception as ex:
                 logger.warning("Fast price fetch failed for %s: %s", sym, ex)
             return sym, None
