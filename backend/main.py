@@ -174,12 +174,19 @@ async def auto_exit_monitor_job():
         def fetch_single_price(sym):
             try:
                 ticker = yf.Ticker(sym)
-                fast_info = getattr(ticker, "fast_info", None)
-                if fast_info and getattr(fast_info, "last_price", None):
-                    return sym, float(fast_info.last_price)
+                fi = getattr(ticker, "fast_info", None)
+                if fi:
+                    p = getattr(fi, "lastPrice", None) or getattr(fi, "last_price", None)
+                    if not p and hasattr(fi, "get"):
+                        p = fi.get("lastPrice") or fi.get("last_price")
+                    if p and isinstance(p, (int, float)) and p > 0:
+                        return sym, float(p)
                 hist = ticker.history(period="1d", interval="1m")
                 if not hist.empty:
                     return sym, float(hist["Close"].iloc[-1])
+                hist2 = ticker.history(period="5d")
+                if not hist2.empty:
+                    return sym, float(hist2["Close"].iloc[-1])
             except Exception as ex:
                 logger.warning("Fast price fetch failed for %s: %s", sym, ex)
             return sym, None
