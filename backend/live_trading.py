@@ -347,9 +347,8 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
             elif price >= trade.target1:
-                res = close_live_position(db, symbol, price, exit_reason="T1_HIT")
-                results.append(res)
-                _live_peak_pnl.pop(trade_id, None)
+                # Notify Telegram when T1 is reached, but DO NOT force-close. Let Dynamic Trailing Engine trail profit!
+                logger.info("🎯 LIVE T1 Target Reached for %s (+₹%.2f P&L). Position kept open to trail for T2/Big Gains!", symbol, current_pnl)
             elif price <= trade.stop_loss:
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
@@ -360,9 +359,8 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
             elif price <= trade.target1:
-                res = close_live_position(db, symbol, price, exit_reason="T1_HIT")
-                results.append(res)
-                _live_peak_pnl.pop(trade_id, None)
+                # Notify Telegram when T1 is reached, but DO NOT force-close. Let Dynamic Trailing Engine trail profit!
+                logger.info("🎯 LIVE T1 Target Reached for %s (+₹%.2f P&L). Position kept open to trail for T2/Big Gains!", symbol, current_pnl)
             elif price >= trade.stop_loss:
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)

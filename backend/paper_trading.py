@@ -575,17 +575,16 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
-            elif current_pnl_buy >= t1_threshold:
-                try:
-                    from backend.telegram_alerts import alert_profit_target_approaching
-                    alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_buy, t1_threshold)
-                except Exception as e:
-                    logger.warning("Telegram alert failed: %s", e)
-                res = close_paper_position(db, symbol, price, exit_reason="T1_HIT")
-                results.append(res)
-                _peak_prices.pop(trade_id, None)
-                _peak_pnl.pop(trade_id, None)
-                logger.info("🎯 ₹%.0f Target Hit for %s! P&L: ₹%.2f", t1_threshold, symbol, current_pnl_buy)
+            elif price >= pos["target1"] or current_pnl_buy >= t1_threshold:
+                # Notify Telegram once when T1 is reached, but DO NOT force-close position. Let Dynamic Trailing Engine trail profit!
+                if not pos.get("_t1_notified"):
+                    pos["_t1_notified"] = True
+                    try:
+                        from backend.telegram_alerts import alert_profit_target_approaching
+                        alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_buy, t1_threshold)
+                    except Exception as e:
+                        logger.warning("Telegram T1 alert failed: %s", e)
+                    logger.info("🎯 T1 Target Reached for %s (+₹%.2f P&L). Position kept open to trail for T2/Big Gains!", symbol, current_pnl_buy)
             elif price <= pos["stop_loss"]:
                 res = close_paper_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
@@ -681,17 +680,16 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
-            elif current_pnl_sell >= t1_threshold:
-                try:
-                    from backend.telegram_alerts import alert_profit_target_approaching
-                    alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_sell, t1_threshold)
-                except Exception as e:
-                    logger.warning("Telegram alert failed: %s", e)
-                res = close_paper_position(db, symbol, price, exit_reason="T1_HIT")
-                results.append(res)
-                _peak_prices.pop(trade_id, None)
-                _peak_pnl.pop(trade_id, None)
-                logger.info("🎯 ₹%.0f Target Hit for %s! P&L: ₹%.2f", t1_threshold, symbol, current_pnl_sell)
+            elif price <= pos["target1"] or current_pnl_sell >= t1_threshold:
+                # Notify Telegram once when T1 is reached, but DO NOT force-close position. Let Dynamic Trailing Engine trail profit!
+                if not pos.get("_t1_notified"):
+                    pos["_t1_notified"] = True
+                    try:
+                        from backend.telegram_alerts import alert_profit_target_approaching
+                        alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_sell, t1_threshold)
+                    except Exception as e:
+                        logger.warning("Telegram T1 alert failed: %s", e)
+                    logger.info("🎯 T1 Target Reached for %s (+₹%.2f P&L). Position kept open to trail for T2/Big Gains!", symbol, current_pnl_sell)
             elif price >= pos["stop_loss"]:
                 res = close_paper_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
