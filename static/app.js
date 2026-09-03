@@ -1221,12 +1221,48 @@ async function loadPortfolio() {
 
     renderPositions(data.positions || []);
     await loadTrades();
+
+    // 🛡️ BROWSER-SIDE AUTO-EXIT SURVEILLANCE ENGINE
+    (data.positions || []).forEach(async (p) => {
+      if (!p.symbol) return;
+      const sym = p.symbol.replace('.NS', '').replace('.BO', '');
+      try {
+        const priceRes = await fetch('/api/stock-price/' + sym);
+        const priceData = await priceRes.json();
+        const cmp = priceData.price;
+        if (cmp && cmp > 0) {
+          const entry = p.entry_price || cmp;
+          const qty = p.quantity || 1;
+          const posPnl = p.action === 'BUY' ? (cmp - entry) * qty : (entry - cmp) * qty;
+          
+          let triggerExit = false;
+          let exitReason = 'SL_HIT';
+          
+          if (posPnl <= -300.0) {
+            triggerExit = true;
+            exitReason = 'HARD_SL_CIRCUIT_BREAKER';
+          } else if (p.action === 'BUY' && cmp <= (p.stop_loss || 0)) {
+            triggerExit = true;
+            exitReason = 'SL_HIT';
+          } else if (p.action === 'SELL' && cmp >= (p.stop_loss || 0)) {
+            triggerExit = true;
+            exitReason = 'SL_HIT';
+          }
+          
+          if (triggerExit) {
+            console.log(`🚨 Auto-closing ${sym} from browser surveillance (Reason: ${exitReason}, PnL: ₹${posPnl.toFixed(2)})`);
+            quickClosePosition(p.symbol, exitReason);
+          }
+        }
+      } catch (ex) {}
+    });
+
   } catch (e) {
     console.error('Portfolio error:', e);
   }
 }
 
-async function quickClosePosition(symbol) {
+async function quickClosePosition(symbol, exitReason = 'MANUAL') {
   try {
     const sym = symbol.replace('.NS', '').replace('.BO', '');
     showToast(`⏳ Closing ${sym} at live market price…`, '');
@@ -1242,7 +1278,7 @@ async function quickClosePosition(symbol) {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: 'MANUAL' }),
+      body: JSON.stringify({ symbol, exit_price: exitPrice, exit_reason: exitReason }),
     });
     const data = await res.json();
     if (data.success) {
