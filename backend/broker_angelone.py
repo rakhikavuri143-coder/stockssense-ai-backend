@@ -18,8 +18,11 @@ ANGELONE_URL = "https://apiconnect.angelbroking.com"
 def generate_totp(totp_secret: str) -> str:
     """Generate dynamic 6-digit TOTP code using the secret key."""
     try:
-        # Strip spaces and sanitize common base32 typos (0 -> O, 1 -> I)
-        clean_secret = totp_secret.replace(" ", "").upper().replace("0", "O").replace("1", "I")
+        import re
+        # Strip spaces and sanitize common base32 typos (0 -> O, 1 -> I, 8 -> B)
+        clean_secret = totp_secret.strip().replace(" ", "").upper()
+        clean_secret = clean_secret.replace("0", "O").replace("1", "I").replace("8", "B")
+        clean_secret = re.sub(r'[^A-Z2-7]', '', clean_secret)
         totp = pyotp.TOTP(clean_secret)
         return totp.now()
     except Exception as e:
