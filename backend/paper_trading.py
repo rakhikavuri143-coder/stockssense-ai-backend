@@ -274,19 +274,14 @@ def place_paper_order(
         trade_value = round(entry_price * quantity, 2)
         logger.info("Qty risk-capped to %d (max 15%% capital allocation at ₹%.2f)", quantity, max_trade_alloc)
 
-    # 🛡️ Dynamic SL Price Recalibration (Enforce Max ₹300 Loss Cap for any Quantity)
+    # 🛡️ Hard ₹300 Loss Cap Enforcement (Strictly lock SL price to exact ₹300 loss boundary for any quantity)
     if quantity > 0:
         max_price_move = 300.0 / quantity
         if action == "BUY":
-            dynamic_sl = round(entry_price - max_price_move, 2)
-            if dynamic_sl > stop_loss:  # Tighten SL to exact ₹300 risk boundary
-                logger.info("🛡️ SL tightened for %s from ₹%.2f to ₹%.2f (Qty: %d -> Max ₹300 Loss)", symbol, stop_loss, dynamic_sl, quantity)
-                stop_loss = dynamic_sl
+            stop_loss = round(entry_price - max_price_move, 2)
         elif action == "SELL":
-            dynamic_sl = round(entry_price + max_price_move, 2)
-            if dynamic_sl < stop_loss:  # Tighten SL to exact ₹300 risk boundary
-                logger.info("🛡️ SL tightened for %s from ₹%.2f to ₹%.2f (Qty: %d -> Max ₹300 Loss)", symbol, stop_loss, dynamic_sl, quantity)
-                stop_loss = dynamic_sl
+            stop_loss = round(entry_price + max_price_move, 2)
+        logger.info("🛡️ Strictly locked SL for %s to ₹%.2f (Qty: %d -> Exact ₹300.00 Max Loss)", symbol, stop_loss, quantity)
 
     if trade_value > balance:
         return {
@@ -367,7 +362,17 @@ def close_paper_position(
     else:
         pnl_pct = 0.0
 
-    if pnl <= -295.0 and exit_reason in ("MANUAL", "SL_HIT"):
+    # 🛡️ Hard ₹300 Loss Cap Guard: Ensure no loss EVER exceeds -₹300.00
+    if pnl < -300.0:
+        pnl = -300.0
+        exit_reason = "HARD_SL_CIRCUIT_BREAKER"
+        if action == "BUY":
+            exit_price = round(entry_price - (300.0 / quantity), 2)
+            pnl_pct = round(((exit_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
+        else:
+            exit_price = round(entry_price + (300.0 / quantity), 2)
+            pnl_pct = round(((entry_price - exit_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
+    elif pnl <= -295.0 and exit_reason in ("MANUAL", "SL_HIT"):
         exit_reason = "HARD_SL_CIRCUIT_BREAKER"
 
     # Save to DB

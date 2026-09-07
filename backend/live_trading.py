@@ -112,19 +112,14 @@ def place_live_order(
     except Exception as ge:
         logger.warning("Circuit check failed for live order %s: %s", symbol, ge)
 
-    # 5.5. 🛡️ Dynamic SL Price Recalibration (Enforce Max ₹300 Loss Cap for any Quantity)
+    # 5.5. 🛡️ Hard ₹300 Loss Cap Enforcement (Strictly lock SL price to exact ₹300 loss boundary for any quantity)
     if quantity > 0:
         max_price_move = 300.0 / quantity
         if action == "BUY":
-            dynamic_sl = round(entry_price - max_price_move, 2)
-            if dynamic_sl > stop_loss:  # Tighten SL to exact ₹300 risk boundary
-                logger.info("🛡️ LIVE SL tightened for %s from ₹%.2f to ₹%.2f (Qty: %d -> Max ₹300 Loss)", symbol, stop_loss, dynamic_sl, quantity)
-                stop_loss = dynamic_sl
+            stop_loss = round(entry_price - max_price_move, 2)
         elif action == "SELL":
-            dynamic_sl = round(entry_price + max_price_move, 2)
-            if dynamic_sl < stop_loss:  # Tighten SL to exact ₹300 risk boundary
-                logger.info("🛡️ LIVE SL tightened for %s from ₹%.2f to ₹%.2f (Qty: %d -> Max ₹300 Loss)", symbol, stop_loss, dynamic_sl, quantity)
-                stop_loss = dynamic_sl
+            stop_loss = round(entry_price + max_price_move, 2)
+        logger.info("🛡️ Strictly locked LIVE SL for %s to ₹%.2f (Qty: %d -> Exact ₹300.00 Max Loss)", symbol, stop_loss, quantity)
 
     # 6. Place order on SmartAPI
     # Target and SL logic mapping
