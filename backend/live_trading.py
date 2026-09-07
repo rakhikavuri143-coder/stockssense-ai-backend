@@ -23,11 +23,14 @@ logger = logging.getLogger(__name__)
 # Global session cache to avoid repeating TOTP login requests
 _smartapi_session = None
 
-def get_live_auth_data() -> Optional[Dict]:
+_smartapi_session = None
+_last_auth_error = ""
+
+def get_live_auth_data(return_error: bool = False):
     """Retrieve or initialize active Angel One SmartAPI authenticated session."""
-    global _smartapi_session
+    global _smartapi_session, _last_auth_error
     if _smartapi_session:
-        return _smartapi_session
+        return (_smartapi_session, "") if return_error else _smartapi_session
 
     client_code = os.getenv("ANGELONE_CLIENT_CODE")
     password    = os.getenv("ANGELONE_PASSWORD")
@@ -36,17 +39,28 @@ def get_live_auth_data() -> Optional[Dict]:
 
     # If any credentials are missing, do not attempt to log in
     if not (client_code and password and api_key and totp_secret):
-        logger.warning("🔑 Angel One credentials missing in environment. Cannot initialize live trading.")
-        return None
+        missing = []
+        if not client_code: missing.append("ANGELONE_CLIENT_CODE")
+        if not password: missing.append("ANGELONE_PASSWORD")
+        if not api_key: missing.append("ANGELONE_API_KEY")
+        if not totp_secret: missing.append("ANGELONE_TOTP_SECRET")
+        _last_auth_error = f"Missing environment keys on Render: {missing}"
+        logger.warning("🔑 %s", _last_auth_error)
+        return (None, _last_auth_error) if return_error else None
 
     try:
-        session = login_smartapi(client_code, password, api_key, totp_secret)
+        session, err = login_smartapi(client_code, password, api_key, totp_secret)
         if session:
             _smartapi_session = session
-            return _smartapi_session
+            _last_auth_error = ""
+            return (_smartapi_session, "") if return_error else _smartapi_session
+        else:
+            _last_auth_error = err or "SmartAPI Authentication failed"
+            return (None, _last_auth_error) if return_error else None
     except Exception as e:
+        _last_auth_error = str(e)
         logger.error("Failed to authenticate with Angel One SmartAPI: %s", e)
-    return None
+        return (None, _last_auth_error) if return_error else None
 
 
 def place_live_order(

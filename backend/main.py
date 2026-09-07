@@ -984,7 +984,7 @@ async def get_live_portfolio(db: Session = Depends(get_db)):
 @app.get("/api/live/broker-status")
 async def get_live_broker_status():
     from backend import live_trading
-    auth_data = live_trading.get_live_auth_data()
+    auth_data, err_msg = live_trading.get_live_auth_data(return_error=True)
     if auth_data:
         return {"status": "connected", "client_code": auth_data.get("client_code")}
     else:
@@ -1000,7 +1000,8 @@ async def get_live_broker_status():
         return {
             "status": "disconnected",
             "missing_keys": missing,
-            "message": f"Missing environment keys: {missing}" if missing else "Authentication failed with SmartAPI (Check Password/TOTP/API Key)"
+            "smartapi_error": err_msg,
+            "message": f"Missing environment keys: {missing}" if missing else f"Angel One Error: {err_msg}"
         }
 
 

@@ -27,12 +27,15 @@ def generate_totp(totp_secret: str) -> str:
         raise e
 
 
-def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: str) -> Optional[Dict]:
+def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: str) -> tuple[Optional[Dict], str]:
     """
     Log in to Angel One SmartAPI using client_code, password, and TOTP secret.
-    Returns auth tokens dict on success.
+    Returns (auth_tokens_dict, error_message).
     """
-    totp_code = generate_totp(totp_secret)
+    try:
+        totp_code = generate_totp(totp_secret)
+    except Exception as te:
+        return None, f"Invalid TOTP Secret Key format: {te}"
     
     endpoints = [
         f"{ANGELONE_URL}/rest/auth/angelbroking/user/v1/loginByPassword",
@@ -40,14 +43,14 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
     ]
     
     payload = {
-        "clientcode": client_code.upper(),
-        "password": password,
+        "clientcode": client_code.upper().strip(),
+        "password": password.strip(),
         "totp": totp_code
     }
     
     headers = {
         "Content-Type": "application/json",
-        "X-PrivateKey": api_key,
+        "X-PrivateKey": api_key.strip(),
         "Accept": "application/json",
         "X-UserType": "USER",
         "X-SourceID": "WEB",
@@ -65,22 +68,25 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
             if data.get("status") is True and "data" in data:
                 tokens = data["data"]
                 logger.info("✅ Angel One SmartAPI login successful for client %s via %s", client_code, url)
-                return {
+                session = {
                     "jwtToken": tokens.get("jwtToken") or tokens.get("token"),
                     "refreshToken": tokens.get("refreshToken", ""),
                     "feedToken": tokens.get("feedToken", ""),
                     "client_code": client_code,
                     "api_key": api_key
                 }
+                return session, ""
             else:
-                last_err = data.get("message") or data.get("errorcode") or str(data)
+                msg = data.get("message") or "Auth Failed"
+                errcode = data.get("errorcode") or data.get("errorCode") or ""
+                last_err = f"{msg} (Code: {errcode})" if errcode else msg
                 logger.warning("⚠️ Angel One login failed on endpoint %s: %s", url, last_err)
         except Exception as e:
             last_err = str(e)
             logger.error("Exception during Angel One login on %s: %s", url, e)
 
     logger.error("❌ All Angel One SmartAPI login endpoints failed. Last error: %s", last_err)
-    return None
+    return None, last_err
 
 
 def place_smartapi_order(
