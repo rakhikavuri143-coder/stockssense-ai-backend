@@ -153,7 +153,7 @@ function syncTradingModeUI() {
   }
   const balLabel = document.querySelector('.balance-label');
   if (balLabel) {
-    balLabel.textContent = currentMode === 'live' ? 'Live P&L Lock' : 'Paper Balance';
+    balLabel.textContent = currentMode === 'live' ? 'Live Angel One Balance' : 'Paper Balance';
   }
   const resetBtn = document.querySelector('.btn-reset');
   if (resetBtn) {

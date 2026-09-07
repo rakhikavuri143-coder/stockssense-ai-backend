@@ -988,7 +988,20 @@ async def get_live_broker_status():
     if auth_data:
         return {"status": "connected", "client_code": auth_data.get("client_code")}
     else:
-        return {"status": "disconnected", "message": "Broker not connected. Please set credentials in Render."}
+        client_code = os.getenv("ANGELONE_CLIENT_CODE")
+        password    = os.getenv("ANGELONE_PASSWORD")
+        api_key     = os.getenv("ANGELONE_API_KEY")
+        totp_secret = os.getenv("ANGELONE_TOTP_SECRET")
+        missing = []
+        if not client_code: missing.append("ANGELONE_CLIENT_CODE")
+        if not password: missing.append("ANGELONE_PASSWORD")
+        if not api_key: missing.append("ANGELONE_API_KEY")
+        if not totp_secret: missing.append("ANGELONE_TOTP_SECRET")
+        return {
+            "status": "disconnected",
+            "missing_keys": missing,
+            "message": f"Missing environment keys: {missing}" if missing else "Authentication failed with SmartAPI (Check Password/TOTP/API Key)"
+        }
 
 
 @app.get("/api/telegram/test")
