@@ -23,6 +23,8 @@ def generate_totp(totp_secret: str) -> str:
         clean_secret = totp_secret.strip().replace(" ", "").upper()
         clean_secret = clean_secret.replace("0", "O").replace("1", "I").replace("8", "B")
         clean_secret = re.sub(r'[^A-Z2-7]', '', clean_secret)
+        if len(clean_secret) % 8 != 0:
+            clean_secret = clean_secret + '=' * (-len(clean_secret) % 8)
         totp = pyotp.TOTP(clean_secret)
         return totp.now()
     except Exception as e:
