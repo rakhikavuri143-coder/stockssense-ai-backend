@@ -21,6 +21,18 @@ _data_5y_cache: dict[str, tuple[float, Optional[float], Optional[float], list[di
 TECH_CACHE_TTL = 15    # 15 seconds live cache for real-time tick accuracy
 DATA5Y_CACHE_TTL = 3600 # 1 hour for 5Y historical daily candles
 
+def prune_caches():
+    """Clear expired caches and force garbage collection to keep RAM under 250 MB on Render."""
+    global _tech_1h_cache, _tech_15m_cache, _data_5y_cache
+    now = time.time()
+    _tech_1h_cache = {k: v for k, v in _tech_1h_cache.items() if now - v[0] < TECH_CACHE_TTL}
+    _tech_15m_cache = {k: v for k, v in _tech_15m_cache.items() if now - v[0] < TECH_CACHE_TTL}
+    _data_5y_cache = {k: v for k, v in _data_5y_cache.items() if now - v[0] < DATA5Y_CACHE_TTL}
+    if len(_data_5y_cache) > 20:
+        _data_5y_cache.clear()
+    import gc
+    gc.collect()
+
 
 # ─────────────────────────── DATA FETCHING ────────────────────────────
 

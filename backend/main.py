@@ -250,6 +250,13 @@ async def auto_exit_monitor_job():
         logger.error("Error in auto_exit_monitor_job: %s", e)
     finally:
         db.close()
+        try:
+            import gc
+            from backend.technicals_1h import prune_caches
+            prune_caches()
+            gc.collect()
+        except Exception:
+            pass
 
 async def weekly_quant_audit_job():
     """Auto-run Saturday Weekly Quant Audit & Strategy Self-Tuning at 10:00 AM IST."""
@@ -820,6 +827,8 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
         # Explicitly release memory back to the OS
         try:
             import gc
+            from backend.technicals_1h import prune_caches
+            prune_caches()
             gc.collect()
         except Exception:
             pass
