@@ -56,7 +56,8 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
         "X-ClientPublicIP": "106.201.200.22",
-        "MACAddress": "00-00-00-00-00-00"
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
     }
 
     last_err = "Unknown error"
@@ -127,8 +128,9 @@ def place_smartapi_order(
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-ClientPublicIP": "106.201.200.22",  # Default placeholder IP
-        "MACAddress": "00-00-00-00-00-00"
+        "X-ClientPublicIP": "106.201.200.22",
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
     }
 
     try:
@@ -160,7 +162,8 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
         "X-ClientPublicIP": "106.201.200.22",
-        "MACAddress": "00-00-00-00-00-00"
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
     }
 
     try:
@@ -190,7 +193,8 @@ def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
         "X-ClientPublicIP": "106.201.200.22",
-        "MACAddress": "00-00-00-00-00-00"
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
     }
     try:
         response = httpx.get(url, headers=headers, timeout=10.0)
