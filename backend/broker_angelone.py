@@ -33,7 +33,11 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
     Returns auth tokens dict on success.
     """
     totp_code = generate_totp(totp_secret)
-    url = f"{ANGELONE_URL}/publisher-apis/api/v1/user/login/v3"
+    
+    endpoints = [
+        f"{ANGELONE_URL}/rest/auth/angelbroking/user/v1/loginByPassword",
+        f"{ANGELONE_URL}/publisher-apis/api/v1/user/login/v3"
+    ]
     
     payload = {
         "clientcode": client_code.upper(),
@@ -44,29 +48,39 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
     headers = {
         "Content-Type": "application/json",
         "X-PrivateKey": api_key,
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": "106.201.200.22",
+        "MACAddress": "00-00-00-00-00-00"
     }
 
-    try:
-        response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
-        data = response.json()
-        
-        if data.get("status") is True and "data" in data:
-            tokens = data["data"]
-            logger.info("✅ Angel One SmartAPI login successful for client %s", client_code)
-            return {
-                "jwtToken": tokens["jwtToken"],
-                "refreshToken": tokens["refreshToken"],
-                "feedToken": tokens["feedToken"],
-                "client_code": client_code,
-                "api_key": api_key
-            }
-        else:
-            logger.error("❌ Angel One login failed: %s", data.get("message"))
-            return None
-    except Exception as e:
-        logger.error("Exception during Angel One login: %s", e)
-        return None
+    last_err = "Unknown error"
+    for url in endpoints:
+        try:
+            response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+            data = response.json()
+            
+            if data.get("status") is True and "data" in data:
+                tokens = data["data"]
+                logger.info("✅ Angel One SmartAPI login successful for client %s via %s", client_code, url)
+                return {
+                    "jwtToken": tokens.get("jwtToken") or tokens.get("token"),
+                    "refreshToken": tokens.get("refreshToken", ""),
+                    "feedToken": tokens.get("feedToken", ""),
+                    "client_code": client_code,
+                    "api_key": api_key
+                }
+            else:
+                last_err = data.get("message") or data.get("errorcode") or str(data)
+                logger.warning("⚠️ Angel One login failed on endpoint %s: %s", url, last_err)
+        except Exception as e:
+            last_err = str(e)
+            logger.error("Exception during Angel One login on %s: %s", url, e)
+
+    logger.error("❌ All Angel One SmartAPI login endpoints failed. Last error: %s", last_err)
+    return None
 
 
 def place_smartapi_order(
