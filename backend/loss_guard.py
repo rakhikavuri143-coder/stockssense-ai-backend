@@ -23,6 +23,33 @@ def check_nifty_trend_guard(crash_threshold: float = -1.5) -> dict:
     Guard 2: Block BUY signals if Nifty 50 is crashing heavily.
     Returns: {blocked: bool, nifty_change_pct: float, reason: str}
     """
+    # 1. Direct Yahoo REST query (50ms, zero-dependency, bypasses 429 rate limit)
+    try:
+        import urllib.request, json
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/%5ENSEI"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            raw = json.loads(resp.read().decode())
+            meta = raw.get("chart", {}).get("result", [{}])[0].get("meta", {})
+            last_p = meta.get("regularMarketPrice")
+            prev_p = meta.get("chartPreviousClose") or meta.get("previousClose")
+            if last_p and prev_p and prev_p > 0:
+                change_pct = round((last_p - prev_p) / prev_p * 100, 2)
+                if change_pct <= crash_threshold:
+                    return {
+                        "blocked":           True,
+                        "nifty_change_pct":  change_pct,
+                        "reason":            f"🚨 Nifty 50 down {change_pct:.1f}% — BUY signals BLOCKED (Market Guard Active)",
+                    }
+                return {
+                    "blocked":           False,
+                    "nifty_change_pct":  change_pct,
+                    "reason":            f"✅ Nifty 50 change: {change_pct:+.1f}% — Market Guard OK",
+                }
+    except Exception as ex:
+        logger.warning("Direct Yahoo REST fetch for Nifty failed: %s", ex)
+
+    # 2. Fallback to yfinance
     try:
         ticker = yf.Ticker(NIFTY_SYMBOL)
         fast_info = getattr(ticker, "fast_info", None)
