@@ -156,6 +156,35 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
         return None
 
 
+def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:
+    """
+    Fetch live RMS funds/margin balance from Angel One SmartAPI.
+    Endpoint: GET /rest/secure/angelbroking/user/v1/getRMS
+    """
+    url = f"{ANGELONE_URL}/rest/secure/angelbroking/user/v1/getRMS"
+    headers = {
+        "Authorization": f"Bearer {auth_data['jwtToken']}",
+        "Content-Type": "application/json",
+        "X-PrivateKey": auth_data["api_key"],
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": "106.201.200.22",
+        "MACAddress": "00-00-00-00-00-00"
+    }
+    try:
+        response = httpx.get(url, headers=headers, timeout=10.0)
+        data = response.json()
+        if data.get("status") is True and "data" in data:
+            return data.get("data", {})
+        else:
+            logger.error("❌ Failed to fetch RMS funds: %s", data.get("message"))
+            return None
+    except Exception as e:
+        logger.error("Exception fetching RMS funds: %s", e)
+        return None
+
+
 _token_map_cache = {}
 
 def fetch_and_cache_tokens() -> dict:

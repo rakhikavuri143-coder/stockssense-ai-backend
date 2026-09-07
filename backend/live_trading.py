@@ -391,21 +391,27 @@ def get_live_portfolio_summary(db: Session) -> dict:
             "opened_at":    str(t.opened_at),
         })
 
-    # Try fetching reality positions from Angel One to compare/verify
+    # Try fetching reality positions and RMS funds from Angel One to compare/verify
     broker_positions = []
+    broker_funds = {}
     auth_data = get_live_auth_data()
     if auth_data:
         try:
+            from backend.broker_angelone import get_smartapi_positions, get_smartapi_rms
             pos_data = get_smartapi_positions(auth_data)
             if pos_data:
                 broker_positions = pos_data
+            rms_data = get_smartapi_rms(auth_data)
+            if rms_data:
+                broker_funds = rms_data
         except Exception as e:
-            logger.debug("Could not fetch positions from Angel One API: %s", e)
+            logger.debug("Could not fetch positions/funds from Angel One API: %s", e)
 
     return {
         "total_pnl":         round(total_pnl, 2),
         "open_positions":    len(open_trades),
         "positions":         positions_list,
         "broker_positions":  broker_positions,
+        "broker_funds":      broker_funds,
         "closed_count":      len(closed_trades)
     }

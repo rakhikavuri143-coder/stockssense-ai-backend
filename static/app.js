@@ -1205,16 +1205,19 @@ async function loadPortfolio() {
     const res  = await fetch(endpoint);
     const data = await res.json();
 
-    const bal  = currentMode === 'live' ? 0 : (data.paper_balance || 0);
+    let bal = 0;
+    if (currentMode === 'live') {
+      if (data.broker_funds && (data.broker_funds.availablecash || data.broker_funds.net || data.broker_funds.collateral)) {
+        bal = parseFloat(data.broker_funds.availablecash || data.broker_funds.net || data.broker_funds.collateral || 0);
+      }
+    } else {
+      bal = data.paper_balance || 0;
+    }
     const pnl  = data.total_pnl || 0;
     const pct  = data.total_pnl_pct || 0;
     const pnlSign = pnl >= 0 ? '+' : '';
 
-    if (currentMode === 'live') {
-      document.getElementById('paperBalance').textContent = `${pnl >= 0 ? '🟢' : '🔴'} ₹${pnl.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
-    } else {
-      document.getElementById('paperBalance').textContent = `₹${bal.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
-    }
+    document.getElementById('paperBalance').textContent = `₹${bal.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}`;
     
     const pnlEl = document.getElementById('paperPnl');
     pnlEl.textContent = `${pnlSign}₹${pnl.toFixed(2)} (${currentMode === 'live' ? 'Live P&L' : pnlSign + pct.toFixed(2) + '%'})`;
