@@ -1025,17 +1025,36 @@ async def get_live_broker_status():
 
 @app.get("/api/debug/server-ip")
 async def debug_server_ip():
-    """Check actual outbound public IP of this server (for Angel One IP registration)."""
+    """Check actual outbound public IP of this server & proxy (for Angel One IP registration)."""
     import httpx as _httpx
-    results = {}
+    from backend import broker_angelone
+    
+    direct_results = {}
     for svc in ["https://api.ipify.org?format=json", "https://ifconfig.me/ip", "https://icanhazip.com"]:
         try:
             r = _httpx.get(svc, timeout=4.0)
             ip = r.json().get("ip") if "json" in svc else r.text.strip()
-            results[svc.split("//")[1].split("/")[0]] = ip
+            direct_results[svc.split("//")[1].split("/")[0]] = ip
         except Exception as e:
-            results[svc.split("//")[1].split("/")[0]] = f"error: {e}"
-    return {"server_outbound_ips": results, "instruction": "Register one of these IPs as Primary Static IP in smartapi.angelone.in"}
+            direct_results[svc.split("//")[1].split("/")[0]] = f"error: {e}"
+
+    proxy_results = {}
+    proxy_url = broker_angelone.get_proxy_url()
+    if proxy_url:
+        try:
+            with broker_angelone.get_httpx_client(timeout=6.0) as client:
+                r = client.get("https://api.ipify.org?format=json")
+                proxy_results["proxy_outbound_ip"] = r.json().get("ip")
+        except Exception as e:
+            proxy_results["proxy_error"] = str(e)
+
+    return {
+        "direct_server_ips": direct_results,
+        "proxy_configured": bool(proxy_url),
+        "proxy_results": proxy_results,
+        "active_registered_ip_header": broker_angelone.get_server_public_ip(),
+        "instruction": "Register the proxy_outbound_ip (or direct IP) as Primary Static IP in smartapi.angelone.in"
+    }
 
 
 @app.get("/api/telegram/test")

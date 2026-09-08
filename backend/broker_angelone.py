@@ -16,6 +16,26 @@ ANGELONE_URL = "https://apiconnect.angelbroking.com"
 
 _SERVER_PUBLIC_IP = None
 
+def get_proxy_url() -> Optional[str]:
+    """Get outbound proxy URL if configured (e.g. Fixie, QuotaGuard, or generic HTTP/HTTPS proxy)."""
+    return (
+        os.getenv("FIXIE_URL")
+        or os.getenv("QUOTAGUARDSTATIC_URL")
+        or os.getenv("SMARTAPI_PROXY_URL")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+    )
+
+
+def get_httpx_client(timeout: float = 10.0) -> httpx.Client:
+    """Return an httpx.Client with optional static IP proxy configured."""
+    proxy = get_proxy_url()
+    if proxy:
+        logger.info("🌐 Using Outbound Proxy for Angel One: %s", proxy.split("@")[-1] if "@" in proxy else proxy)
+        return httpx.Client(proxy=proxy, timeout=timeout)
+    return httpx.Client(timeout=timeout)
+
+
 def get_server_public_ip() -> str:
     """Dynamically resolve outbound server IP for Angel One headers."""
     global _SERVER_PUBLIC_IP
@@ -82,30 +102,31 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
     }
 
     last_err = "Unknown error"
-    for url in endpoints:
-        try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
-            data = response.json()
-            
-            if data.get("status") is True and "data" in data:
-                tokens = data["data"]
-                logger.info("✅ Angel One SmartAPI login successful for client %s via %s", client_code, url)
-                session = {
-                    "jwtToken": tokens.get("jwtToken") or tokens.get("token"),
-                    "refreshToken": tokens.get("refreshToken", ""),
-                    "feedToken": tokens.get("feedToken", ""),
-                    "client_code": client_code,
-                    "api_key": api_key
-                }
-                return session, ""
-            else:
-                msg = data.get("message") or "Auth Failed"
-                errcode = data.get("errorcode") or data.get("errorCode") or ""
-                last_err = f"{msg} (Code: {errcode})" if errcode else msg
-                logger.warning("⚠️ Angel One login failed on endpoint %s: %s", url, last_err)
-        except Exception as e:
-            last_err = str(e)
-            logger.error("Exception during Angel One login on %s: %s", url, e)
+    with get_httpx_client(timeout=10.0) as client:
+        for url in endpoints:
+            try:
+                response = client.post(url, json=payload, headers=headers)
+                data = response.json()
+                
+                if data.get("status") is True and "data" in data:
+                    tokens = data["data"]
+                    logger.info("✅ Angel One SmartAPI login successful for client %s via %s", client_code, url)
+                    session = {
+                        "jwtToken": tokens.get("jwtToken") or tokens.get("token"),
+                        "refreshToken": tokens.get("refreshToken", ""),
+                        "feedToken": tokens.get("feedToken", ""),
+                        "client_code": client_code,
+                        "api_key": api_key
+                    }
+                    return session, ""
+                else:
+                    msg = data.get("message") or "Auth Failed"
+                    errcode = data.get("errorcode") or data.get("errorCode") or ""
+                    last_err = f"{msg} (Code: {errcode})" if errcode else msg
+                    logger.warning("⚠️ Angel One login failed on endpoint %s: %s", url, last_err)
+            except Exception as e:
+                last_err = str(e)
+                logger.error("Exception during Angel One login on %s: %s", url, e)
 
     logger.error("❌ All Angel One SmartAPI login endpoints failed. Last error: %s", last_err)
     return None, last_err
@@ -155,15 +176,16 @@ def place_smartapi_order(
     }
 
     try:
-        response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
-        data = response.json()
-        if data.get("status") is True and "data" in data:
-            order_id = data["data"].get("uniqueorderid") or data["data"].get("orderid")
-            logger.info("✅ Order placed successfully! Order ID: %s", order_id)
-            return {"success": True, "order_id": order_id, "message": "Order placed successfully"}
-        else:
-            logger.error("❌ Order placement failed: %s", data.get("message"))
-            return {"success": False, "message": data.get("message", "Unknown error")}
+        with get_httpx_client(timeout=10.0) as client:
+            response = client.post(url, json=payload, headers=headers)
+            data = response.json()
+            if data.get("status") is True and "data" in data:
+                order_id = data["data"].get("uniqueorderid") or data["data"].get("orderid")
+                logger.info("✅ Order placed successfully! Order ID: %s", order_id)
+                return {"success": True, "order_id": order_id, "message": "Order placed successfully"}
+            else:
+                logger.error("❌ Order placement failed: %s", data.get("message"))
+                return {"success": False, "message": data.get("message", "Unknown error")}
     except Exception as e:
         logger.error("Exception during order placement: %s", e)
         return {"success": False, "message": str(e)}
@@ -188,13 +210,14 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
     }
 
     try:
-        response = httpx.get(url, headers=headers, timeout=10.0)
-        data = response.json()
-        if data.get("status") is True:
-            return data.get("data", [])
-        else:
-            logger.error("❌ Failed to fetch positions: %s", data.get("message"))
-            return None
+        with get_httpx_client(timeout=10.0) as client:
+            response = client.get(url, headers=headers)
+            data = response.json()
+            if data.get("status") is True:
+                return data.get("data", [])
+            else:
+                logger.error("❌ Failed to fetch positions: %s", data.get("message"))
+                return None
     except Exception as e:
         logger.error("Exception fetching positions: %s", e)
         return None
@@ -218,13 +241,14 @@ def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:
         "MACAddress": "fe-80-00-00-00-00"
     }
     try:
-        response = httpx.get(url, headers=headers, timeout=10.0)
-        data = response.json()
-        if data.get("status") is True and "data" in data:
-            return data.get("data", {})
-        else:
-            logger.error("❌ Failed to fetch RMS funds: %s", data.get("message"))
-            return None
+        with get_httpx_client(timeout=10.0) as client:
+            response = client.get(url, headers=headers)
+            data = response.json()
+            if data.get("status") is True and "data" in data:
+                return data.get("data", {})
+            else:
+                logger.error("❌ Failed to fetch RMS funds: %s", data.get("message"))
+                return None
     except Exception as e:
         logger.error("Exception fetching RMS funds: %s", e)
         return None
