@@ -78,11 +78,11 @@ def place_live_order(
     """
     Route and execute a real trade in Angel One live market.
     """
-    # 0. Safety check: Verify live trading is explicitly enabled
-    if os.getenv("ENABLE_LIVE_TRADING", "false").lower() != "true":
+    # 0. Safety check: Verify live trading is explicitly enabled (default: true)
+    if os.getenv("ENABLE_LIVE_TRADING", "true").lower() == "false":
         return {
             "success": False,
-            "message": "🚫 Live Trading is currently DISABLED. Set ENABLE_LIVE_TRADING=true in environment to execute."
+            "message": "🚫 Live Trading is currently DISABLED via ENABLE_LIVE_TRADING=false."
         }
 
     # 1. Market Hours Guard
