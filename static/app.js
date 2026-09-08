@@ -621,8 +621,8 @@ function buildSignalCardHTML(s) {
       <div class="news-snippet">${s.news_summary || s.reasoning || 'No news summary available.'}</div>
 
       <div class="card-actions" onclick="event.stopPropagation()">
-        ${s.signal === 'BUY'  || s.signal === 'AVOID' ? `<button class="btn-paper-buy"  onclick="liveQuickPaperBuy(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val}, ${s.scalp_mode ? true : false})">📝 Paper BUY</button>` : ''}
-        ${s.signal === 'SELL' || s.signal === 'AVOID' ? `<button class="btn-paper-sell" onclick="liveQuickPaperSell(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val}, ${s.scalp_mode ? true : false})">📝 Paper SELL</button>` : ''}
+        ${s.signal === 'BUY'  || s.signal === 'AVOID' ? `<button class="btn-paper-buy"  onclick="liveQuickPaperBuy(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val}, ${s.scalp_mode ? true : false})">${currentMode === 'live' ? '⚡ LIVE BUY' : '📝 Paper BUY'}</button>` : ''}
+        ${s.signal === 'SELL' || s.signal === 'AVOID' ? `<button class="btn-paper-sell" onclick="liveQuickPaperSell(this, ${sigId}, '${s.symbol}', '${safeName}', ${stopLoss}, ${target1Val}, ${target2Val}, ${s.scalp_mode ? true : false})">${currentMode === 'live' ? '⚡ LIVE SELL' : '📝 Paper SELL'}</button>` : ''}
         <button class="btn-detail" onclick="openModalData(${encodeSignal(s)})">📊 Chart</button>
       </div>
     </div>
@@ -879,8 +879,11 @@ function openQuickOrderModal(signalId, symbol, name, action, price, sl, t1, t2, 
   _qoIsScalp = isScalp;
 
   const titleEl = document.getElementById('qo_title');
-  if (titleEl) titleEl.textContent = `${action === 'BUY' ? '🟢 BUY' : '🔴 SELL'} Paper Order`;
+  if (titleEl) titleEl.textContent = currentMode === 'live' ? `⚡ ${action === 'BUY' ? '🟢 BUY' : '🔴 SELL'} Live Order (Angel One MIS)` : `${action === 'BUY' ? '🟢 BUY' : '🔴 SELL'} Paper Order`;
   
+  const submitBtn = document.getElementById('qo_submit_btn');
+  if (submitBtn) submitBtn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade (Angel One)' : '🚀 Confirm Paper Trade';
+
   const symEl = document.getElementById('qo_symbol');
   if (symEl) symEl.textContent = sym;
   
@@ -892,7 +895,7 @@ function openQuickOrderModal(signalId, symbol, name, action, price, sl, t1, t2, 
   
   const typeEl = document.getElementById('qo_trade_type');
   if (typeEl) {
-    typeEl.textContent = `${action} ORDER`;
+    typeEl.textContent = currentMode === 'live' ? `${action} LIVE MIS ORDER` : `${action} ORDER`;
     typeEl.style.color = action === 'BUY' ? '#00ff88' : '#ff4d6d';
   }
 
@@ -957,8 +960,14 @@ function updateQoOrderValue() {
   if (hint) {
     if (price > 0 && !isNaN(qty) && qty > 0) {
       const totalVal = (price * qty).toLocaleString('en-IN', {maximumFractionDigits: 0});
-      const pct = ((price * qty) / 300000 * 100).toFixed(1);
-      hint.textContent = `📊 Order Total: ${qty} shares × ₹${price.toFixed(2)} = ₹${totalVal} (${pct}% of capital)`;
+      if (currentMode === 'live') {
+        const liveCash = (window.liveBrokerBalance && window.liveBrokerBalance > 0) ? window.liveBrokerBalance : 500;
+        const maxPower = liveCash * 5;
+        hint.textContent = `⚡ LIVE MIS (5X Margin): ${qty} shares × ₹${price.toFixed(2)} = ₹${totalVal} (Max Risk ₹300 | Power ₹${maxPower.toLocaleString('en-IN')})`;
+      } else {
+        const pct = ((price * qty) / 300000 * 100).toFixed(1);
+        hint.textContent = `📊 Order Total: ${qty} shares × ₹${price.toFixed(2)} = ₹${totalVal} (${pct}% of capital)`;
+      }
     } else {
       hint.textContent = '';
     }
@@ -1027,7 +1036,7 @@ async function submitQuickOrder() {
   } catch (e) {
     showQoError('❌ Network error: ' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade' : '🚀 Confirm Paper Trade'; }
+    if (btn) { btn.disabled = false; btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade (Angel One)' : '🚀 Confirm Paper Trade'; }
   }
 }
 
@@ -1040,13 +1049,22 @@ function showQoError(msg) {
 }
 
 function computeQty(entry, sl, capital = 300000, riskPct = 1.5) {
-  const risk     = capital * (riskPct / 100);
-  const maxAlloc = 100000;                         // Max ₹1,00,000 (₹1 Lakh per trade limit as requested)
   const slDist   = Math.abs(entry - sl);
   if (slDist === 0 || entry === 0) return 1;
-  const riskQty  = Math.floor(risk / slDist);
-  const maxQty   = Math.floor(maxAlloc / entry);   // Cap allocation to max ₹1 Lakh
-  return Math.max(1, Math.min(riskQty, maxQty));
+  if (currentMode === 'live') {
+    const liveCash = (window.liveBrokerBalance && window.liveBrokerBalance > 0) ? window.liveBrokerBalance : 500;
+    const maxPower = liveCash * 5;
+    const hardMaxRisk = 300;
+    const riskQty = Math.floor(hardMaxRisk / slDist);
+    const maxQty = Math.floor(maxPower / entry);
+    return Math.max(1, Math.min(riskQty, maxQty));
+  } else {
+    const risk     = capital * (riskPct / 100);
+    const maxAlloc = 100000;                         // Max ₹1,00,000 (₹1 Lakh per trade limit as requested)
+    const riskQty  = Math.floor(risk / slDist);
+    const maxQty   = Math.floor(maxAlloc / entry);   // Cap allocation to max ₹1 Lakh
+    return Math.max(1, Math.min(riskQty, maxQty));
+  }
 }
 
 
@@ -1210,6 +1228,7 @@ async function loadPortfolio() {
       if (data.broker_funds && (data.broker_funds.availablecash || data.broker_funds.net || data.broker_funds.collateral)) {
         bal = parseFloat(data.broker_funds.availablecash || data.broker_funds.net || data.broker_funds.collateral || 0);
       }
+      window.liveBrokerBalance = bal > 0 ? bal : 500;
     } else {
       bal = data.paper_balance || 0;
     }
@@ -1576,6 +1595,18 @@ let _mtSymbol     = '';   // currently selected symbol
 let _mtSuggestions = {}; // SL/T1/T2 suggestions from API
 
 async function openManualTradeModal() {
+  const modalTitle = document.getElementById('mt_modal_title');
+  const submitBtn  = document.getElementById('mt_submit_btn');
+  const action     = document.getElementById('mt_action')?.value || 'BUY';
+
+  if (currentMode === 'live') {
+    if (modalTitle) modalTitle.textContent = `⚡ ${action} Live Order (Angel One MIS)`;
+    if (submitBtn)  submitBtn.textContent  = '🚀 Confirm LIVE Trade (Angel One)';
+  } else {
+    if (modalTitle) modalTitle.textContent = '✏️ Manual Trade Entry (Paper)';
+    if (submitBtn)  submitBtn.textContent  = '🚀 Place Paper Trade';
+  }
+
   // Show modal immediately
   document.getElementById('manualTradeOverlay').classList.add('active');
   showMtStep1();
@@ -1710,6 +1741,17 @@ function setManualAction(action) {
     buyBtn.className  = 'action-btn';
     sellBtn.className = 'action-btn active-sell';
   }
+
+  const modalTitle = document.getElementById('mt_modal_title');
+  const submitBtn  = document.getElementById('mt_submit_btn');
+  if (currentMode === 'live') {
+    if (modalTitle) modalTitle.textContent = `⚡ ${action} Live Order (Angel One MIS)`;
+    if (submitBtn)  submitBtn.textContent  = '🚀 Confirm LIVE Trade (Angel One)';
+  } else {
+    if (modalTitle) modalTitle.textContent = '✏️ Manual Trade Entry (Paper)';
+    if (submitBtn)  submitBtn.textContent  = '🚀 Place Paper Trade';
+  }
+
   applyMtSuggestions(action);
   autoCalcManualQty();
 }
@@ -1725,15 +1767,27 @@ function autoCalcManualQty() {
   if (!isNaN(price) && !isNaN(sl) && sl > 0 && price > 0) {
     const slDist = Math.abs(price - sl);
     if (slDist === 0) return;
-    const balance  = 300000;               // paper capital
-    const risk     = balance * 0.02;       // 2% of ₹3L = ₹6,000
-    const riskQty  = Math.floor(risk / slDist);          // qty from risk rule
-    const maxQty   = Math.floor(balance / price);        // max qty balance can afford
-    const qty      = Math.max(1, Math.min(riskQty, maxQty)); // never exceed balance
-    document.getElementById('mt_qty').value = qty;
-    const tradeVal = (qty * price).toLocaleString('en-IN', {maximumFractionDigits: 0});
-    hint.textContent = `2% risk rule: ${qty} qty × ₹${price.toFixed(2)} = ₹${tradeVal} (capped to balance)`;
 
+    if (currentMode === 'live') {
+      const liveCash = (window.liveBrokerBalance && window.liveBrokerBalance > 0) ? window.liveBrokerBalance : 500;
+      const maxPower = liveCash * 5; // 5X Intraday MIS Margin
+      const hardMaxRisk = 300;       // Max ₹300 Hard Circuit Breaker Loss Cap
+      const riskQty = Math.floor(hardMaxRisk / slDist);
+      const maxQty = Math.floor(maxPower / price);
+      const qty = Math.max(1, Math.min(riskQty, maxQty));
+      document.getElementById('mt_qty').value = qty;
+      const tradeVal = (qty * price).toLocaleString('en-IN', {maximumFractionDigits: 0});
+      hint.textContent = `⚡ LIVE MIS (5X Margin): ${qty} qty × ₹${price.toFixed(2)} = ₹${tradeVal} (Max Risk ₹300 | Max Cap ₹${maxPower.toLocaleString('en-IN')})`;
+    } else {
+      const balance  = 300000;               // paper capital
+      const risk     = balance * 0.02;       // 2% of ₹3L = ₹6,000
+      const riskQty  = Math.floor(risk / slDist);          // qty from risk rule
+      const maxQty   = Math.floor(balance / price);        // max qty balance can afford
+      const qty      = Math.max(1, Math.min(riskQty, maxQty)); // never exceed balance
+      document.getElementById('mt_qty').value = qty;
+      const tradeVal = (qty * price).toLocaleString('en-IN', {maximumFractionDigits: 0});
+      hint.textContent = `2% risk rule: ${qty} qty × ₹${price.toFixed(2)} = ₹${tradeVal} (capped to balance)`;
+    }
 
     if (!isNaN(t1) && t1 > 0) {
       const reward = Math.abs(t1 - price);
@@ -1800,7 +1854,7 @@ async function submitManualTrade() {
     showMtError('Network error: ' + e.message);
   } finally {
     btn.disabled    = false;
-    btn.textContent = currentMode === 'live' ? 'Place LIVE Trade' : 'Place Paper Trade';
+    btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade (Angel One)' : '🚀 Place Paper Trade';
   }
 }
 
