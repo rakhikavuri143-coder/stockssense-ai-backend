@@ -21,11 +21,13 @@ def get_server_public_ip() -> str:
     global _SERVER_PUBLIC_IP
     if _SERVER_PUBLIC_IP:
         return _SERVER_PUBLIC_IP
-    try:
-        res = httpx.get("https://api.ipify.org?format=json", timeout=3.0)
-        _SERVER_PUBLIC_IP = res.json().get("ip", "74.220.48.29")
-    except Exception:
-        _SERVER_PUBLIC_IP = "74.220.48.29"
+    
+    env_ip = os.getenv("ANGELONE_CLIENT_PUBLIC_IP")
+    if env_ip:
+        _SERVER_PUBLIC_IP = env_ip.strip()
+        return _SERVER_PUBLIC_IP
+
+    _SERVER_PUBLIC_IP = "157.50.98.178"
     return _SERVER_PUBLIC_IP
 
 
