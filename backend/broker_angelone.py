@@ -27,7 +27,7 @@ def get_server_public_ip() -> str:
         _SERVER_PUBLIC_IP = env_ip.strip()
         return _SERVER_PUBLIC_IP
 
-    _SERVER_PUBLIC_IP = "157.50.98.178"
+    _SERVER_PUBLIC_IP = "157.50.91.3"
     return _SERVER_PUBLIC_IP
 
 
