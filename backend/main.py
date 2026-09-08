@@ -981,6 +981,25 @@ async def get_live_portfolio(db: Session = Depends(get_db)):
     return live_trading.get_live_portfolio_summary(db)
 
 
+@app.post("/api/live/record-order")
+async def record_live_order(payload: dict, db: Session = Depends(get_db)):
+    from backend import live_trading
+    return live_trading.record_live_trade(
+        db=db,
+        symbol=payload.get("symbol"),
+        company_name=payload.get("company_name"),
+        action=payload.get("action"),
+        entry_price=payload.get("entry_price"),
+        quantity=payload.get("quantity"),
+        stop_loss=payload.get("stop_loss"),
+        target1=payload.get("target1"),
+        target2=payload.get("target2"),
+        order_id=payload.get("order_id"),
+        signal_id=payload.get("signal_id"),
+        is_scalp=payload.get("is_scalp", False)
+    )
+
+
 @app.get("/api/live/broker-status")
 async def get_live_broker_status():
     from backend import live_trading

@@ -969,8 +969,78 @@ function updateQoOrderValue() {
         hint.textContent = `📊 Order Total: ${qty} shares × ₹${price.toFixed(2)} = ₹${totalVal} (${pct}% of capital)`;
       }
     } else {
-      hint.textContent = '';
+    hint.textContent = '';
     }
+  }
+}
+
+async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
+  showToast('🔄 Executing Direct Browser Order to Angel One…', '');
+  try {
+    const directRes = await fetch("https://apiconnect.angelbroking.com/rest/secure/angelbroking/order/v1/placeOrder", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${data.jwtToken}`,
+        "Content-Type": "application/json",
+        "X-PrivateKey": data.api_key,
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": "157.50.91.3",
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
+      },
+      body: JSON.stringify({
+        variety: "NORMAL",
+        tradingsymbol: data.trading_symbol,
+        symboltoken: data.symbol_token,
+        transactiontype: data.action.toUpperCase(),
+        exchange: "NSE",
+        ordertype: "MARKET",
+        producttype: "INTRADAY",
+        duration: "DAY",
+        price: String(data.price.toFixed(2)),
+        quantity: String(data.quantity),
+        squareoff: "0.00",
+        stoploss: "0.00"
+      })
+    });
+    const directData = await directRes.json();
+    if (directData.status === true && directData.data) {
+      const orderId = directData.data.uniqueorderid || directData.data.orderid;
+      await fetch("/api/live/record-order", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          symbol: symbol,
+          company_name: name || symbol,
+          action: data.action,
+          entry_price: data.price,
+          quantity: data.quantity,
+          stop_loss: data.stop_loss,
+          target1: data.target1,
+          target2: data.target2,
+          order_id: orderId,
+          is_scalp: isScalp
+        })
+      });
+      showToast(`⚡ LIVE ${data.action}: ${data.quantity} x ${symbol.replace('.NS','')} @ ₹${data.price.toFixed(2)}`, data.action.toLowerCase());
+      if (alertsEnabled) playAlertSound();
+      closeManualTradeModal();
+      closeQuickOrderModal();
+      switchTab('paper');
+      loadPortfolio();
+      return true;
+    } else {
+      const msg = directData.message || 'Direct order failed.';
+      showMtError(msg);
+      showQoError(msg);
+      return false;
+    }
+  } catch (directErr) {
+    showMtError('Direct order network error: ' + directErr.message);
+    showQoError('Direct order network error: ' + directErr.message);
+    return false;
   }
 }
 
@@ -1027,6 +1097,8 @@ async function submitQuickOrder() {
       closeQuickOrderModal();
       switchTab('paper');
       loadPortfolio();
+    } else if (data.browser_fallback) {
+      await executeBrowserDirectOrder(data, symbol, name, _qoIsScalp);
     } else {
       showQoError('⚠️ ' + (data.message || 'Order failed.'));
       if (data.message && data.message.includes('Already have an open paper position')) {
@@ -1847,6 +1919,8 @@ async function submitManualTrade() {
       if (alertsEnabled) playAlertSound();
       closeManualTradeModal();
       loadPortfolio();
+    } else if (data.browser_fallback) {
+      await executeBrowserDirectOrder(data, _mtSymbol, _mtSymbol);
     } else {
       showMtError(data.message || 'Order failed.');
     }

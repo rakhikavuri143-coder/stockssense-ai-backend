@@ -149,10 +149,24 @@ def place_live_order(
     )
 
     if not order_res.get("success"):
-        return {
+        err_msg = order_res.get('message', '')
+        resp = {
             "success": False,
-            "message": f"❌ Angel One Execution Failed: {order_res.get('message')}"
+            "message": f"❌ Angel One Execution Failed: {err_msg}"
         }
+        if "registered IP" in err_msg.lower() or "not a registered ip" in err_msg.lower() or "ab1012" in err_msg.lower():
+            resp["browser_fallback"] = True
+            resp["jwtToken"] = auth_data.get("jwtToken")
+            resp["api_key"] = auth_data.get("api_key")
+            resp["trading_symbol"] = trading_symbol
+            resp["symbol_token"] = token
+            resp["action"] = action
+            resp["quantity"] = quantity
+            resp["price"] = entry_price
+            resp["stop_loss"] = stop_loss
+            resp["target1"] = target1
+            resp["target2"] = target2
+        return resp
 
     order_id = order_res.get("order_id")
 
@@ -429,3 +443,46 @@ def get_live_portfolio_summary(db: Session) -> dict:
         "broker_funds":      broker_funds,
         "closed_count":      len(closed_trades)
     }
+
+
+def record_live_trade(
+    db: Session,
+    symbol: str,
+    company_name: str,
+    action: str,
+    entry_price: float,
+    quantity: int,
+    stop_loss: float,
+    target1: float,
+    target2: float,
+    order_id: str,
+    signal_id: Optional[int] = None,
+    is_scalp: bool = False
+) -> dict:
+    """Record a live trade in database after browser-direct client-side execution."""
+    trade_data = {
+        "symbol": symbol,
+        "company_name": company_name or symbol,
+        "action": action.upper(),
+        "entry_price": float(entry_price),
+        "quantity": int(quantity),
+        "stop_loss": float(stop_loss),
+        "target1": float(target1),
+        "target2": float(target2),
+        "status": "OPEN",
+        "order_id": str(order_id),
+        "trade_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "signal_id": signal_id,
+        "is_scalp": is_scalp
+    }
+    trade = LiveTrade(**trade_data)
+    db.add(trade)
+    db.commit()
+    db.refresh(trade)
+
+    try:
+        telegram_alerts.send_order_alert(trade_data, is_live=True)
+    except Exception as te:
+        logger.warning("Failed to send Telegram alert for live trade: %s", te)
+
+    return {"success": True, "trade_id": trade.id, "message": f"Recorded live trade for {symbol}"}
