@@ -14,6 +14,20 @@ logger = logging.getLogger(__name__)
 
 ANGELONE_URL = "https://apiconnect.angelbroking.com"
 
+_SERVER_PUBLIC_IP = None
+
+def get_server_public_ip() -> str:
+    """Dynamically resolve outbound server IP for Angel One headers."""
+    global _SERVER_PUBLIC_IP
+    if _SERVER_PUBLIC_IP:
+        return _SERVER_PUBLIC_IP
+    try:
+        res = httpx.get("https://api.ipify.org?format=json", timeout=3.0)
+        _SERVER_PUBLIC_IP = res.json().get("ip", "74.220.48.29")
+    except Exception:
+        _SERVER_PUBLIC_IP = "74.220.48.29"
+    return _SERVER_PUBLIC_IP
+
 
 def generate_totp(totp_secret: str) -> str:
     """Generate dynamic 6-digit TOTP code using the secret key."""
@@ -60,7 +74,7 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-ClientPublicIP": "106.201.200.22",
+        "X-ClientPublicIP": get_server_public_ip(),
         "X-MACaddress": "fe-80-00-00-00-00",
         "MACAddress": "fe-80-00-00-00-00"
     }
@@ -133,7 +147,7 @@ def place_smartapi_order(
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-ClientPublicIP": "106.201.200.22",
+        "X-ClientPublicIP": get_server_public_ip(),
         "X-MACaddress": "fe-80-00-00-00-00",
         "MACAddress": "fe-80-00-00-00-00"
     }
@@ -166,7 +180,7 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-ClientPublicIP": "106.201.200.22",
+        "X-ClientPublicIP": get_server_public_ip(),
         "X-MACaddress": "fe-80-00-00-00-00",
         "MACAddress": "fe-80-00-00-00-00"
     }
@@ -197,7 +211,7 @@ def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-ClientPublicIP": "106.201.200.22",
+        "X-ClientPublicIP": get_server_public_ip(),
         "X-MACaddress": "fe-80-00-00-00-00",
         "MACAddress": "fe-80-00-00-00-00"
     }
