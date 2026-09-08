@@ -1023,6 +1023,20 @@ async def get_live_broker_status():
             "message": f"Missing environment keys: {missing}" if missing else f"Angel One Error: {err_msg}"
         }
 
+@app.get("/api/debug/server-ip")
+async def debug_server_ip():
+    """Check actual outbound public IP of this server (for Angel One IP registration)."""
+    import httpx as _httpx
+    results = {}
+    for svc in ["https://api.ipify.org?format=json", "https://ifconfig.me/ip", "https://icanhazip.com"]:
+        try:
+            r = _httpx.get(svc, timeout=4.0)
+            ip = r.json().get("ip") if "json" in svc else r.text.strip()
+            results[svc.split("//")[1].split("/")[0]] = ip
+        except Exception as e:
+            results[svc.split("//")[1].split("/")[0]] = f"error: {e}"
+    return {"server_outbound_ips": results, "instruction": "Register one of these IPs as Primary Static IP in smartapi.angelone.in"}
+
 
 @app.get("/api/telegram/test")
 async def test_telegram_alert():
