@@ -151,6 +151,10 @@ def run_deep_ai_scan(category: str = "all") -> dict:
     """Full Gemini AI Brain scan — same pipeline as Render website."""
     from concurrent.futures import ThreadPoolExecutor
 
+    market_open, market_msg = check_market_hours_ist()
+    if not market_open:
+        return {"signals": [], "total": 0, "category": category, "market_closed": True, "error": market_msg}
+
     if not DEEP_AI_AVAILABLE:
         return {"signals": [], "total": 0, "category": category,
                 "error": "Deep AI Brain not available. Backend modules missing."}
@@ -321,6 +325,18 @@ def _ultra_sniper_scan_single(stock: dict) -> Optional[dict]:
         return None
 
 
+def check_market_hours_ist() -> tuple[bool, str]:
+    """Check if Indian stock market (NSE) is currently open (Mon-Fri 9:15 AM - 3:30 PM IST)."""
+    from datetime import datetime, timezone, timedelta
+    ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    if ist_now.weekday() in (5, 6):
+        return False, "🌙 MARKET IS CLOSED TODAY (Weekend: Saturday/Sunday). Live signals active Mon-Fri 9:15 AM - 3:30 PM IST."
+    time_str = ist_now.strftime("%H:%M")
+    if not ("09:15" <= time_str <= "15:30"):
+        return False, f"🌙 MARKET IS CLOSED RIGHT NOW ({time_str} IST). Live NSE Trading Hours are 9:15 AM - 3:30 PM IST. Zero signals generated outside market hours to protect capital."
+    return True, "✅ Market is Open"
+
+
 def run_ultra_sniper_scan() -> dict:
     """
     👑 TODAY'S #1 ULTRA SNIPER TRADE SCANNER
@@ -329,6 +345,16 @@ def run_ultra_sniper_scan() -> dict:
     """
     from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timezone, timedelta
+
+    # 🛑 Market Hours Guard: Zero signals outside 9:15 AM - 3:30 PM IST
+    market_open, market_msg = check_market_hours_ist()
+    if not market_open:
+        return {
+            "sniper_trade": None,
+            "total_scanned": 0,
+            "market_closed": True,
+            "message": market_msg
+        }
 
     if not DEEP_AI_AVAILABLE:
         return {"sniper_trade": None, "total_scanned": 0,
@@ -1015,6 +1041,10 @@ def _analyze_single_stock_local(stk):
 def run_instant_market_scan(category="all"):
     """Scan market in parallel within 1.5 seconds!"""
     from concurrent.futures import ThreadPoolExecutor
+
+    market_open, market_msg = check_market_hours_ist()
+    if not market_open:
+        return {"signals": [], "total": 0, "category": category, "market_closed": True, "error": market_msg}
     
     if category == "budget":
         stocks = WATCHLISTS["budget"]

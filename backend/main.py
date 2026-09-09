@@ -618,6 +618,16 @@ async def ultra_sniper_scan_endpoint():
 
     ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     time_str = ist_now.strftime("%H:%M")
+
+    # 🛑 Strict Market Hours Guard: Zero signals outside 9:15 AM - 3:30 PM IST
+    if ist_now.weekday() in (5, 6) or not ("09:15" <= time_str <= "15:30"):
+        return {
+            "sniper_trade": None,
+            "total_scanned": 0,
+            "market_closed": True,
+            "message": f"🌙 MARKET IS CLOSED RIGHT NOW ({time_str} IST). Live NSE Trading Hours are 9:15 AM - 3:30 PM IST. Zero signals generated outside market hours to protect capital."
+        }
+
     is_lunch_trap = "11:30" <= time_str <= "13:30"
 
     try:
