@@ -2321,10 +2321,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
 // ─────────────────────── ULTRA SNIPER 1-TRADE SCANNER ───────────────────────
 async function startUltraSniperScan() {
-  const container = document.getElementById('signalsContainer');
+  const container = document.getElementById('signalGrid') || document.getElementById('signalsContainer');
   if (!container) return;
 
-  switchTab('signals');
+  if (typeof switchTab === 'function') {
+    try { switchTab('signals'); } catch(e){}
+  }
   showToast('👑 Running Daily 1-Sniper Trade Scan…', 'info');
 
   container.innerHTML = `
