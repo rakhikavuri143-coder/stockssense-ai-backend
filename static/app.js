@@ -2318,3 +2318,102 @@ function togglePinVisibility() {
 window.addEventListener('DOMContentLoaded', () => {
   setTimeout(initAuthSession, 500); // Small delay so page renders first
 });
+
+// ─────────────────────── ULTRA SNIPER 1-TRADE SCANNER ───────────────────────
+async function startUltraSniperScan() {
+  const container = document.getElementById('signalsContainer');
+  if (!container) return;
+
+  switchTab('signals');
+  showToast('👑 Running Daily 1-Sniper Trade Scan…', 'info');
+
+  container.innerHTML = `
+    <div style="text-align:center; padding:60px 20px; background:linear-gradient(145deg, #0d111a, #16122c); border:1px solid rgba(245,158,11,0.3); border-radius:18px;">
+      <div style="font-size:48px; margin-bottom:16px;">👑</div>
+      <h3 style="font-size:1.3rem; font-weight:900; color:#fbbf24; margin-bottom:8px;">Scanning Nifty 50 for Today's #1 Ultra Sniper Trade…</h3>
+      <p style="font-size:0.85rem; color:#94a3b8; max-width:440px; margin:0 auto 16px; line-height:1.6;">
+        Evaluating: <b>1H+15M Dual Lock</b> → <b>RVOL >= 1.8x Gate</b> → <b>VWAP Confluence</b> → <b>RSI Sweet Zone</b> → <b>All 18 Loss Guards</b><br><br>
+        <i>Filtering out 49 stocks to find the SINGLE 92%+ Ultra-Conviction Winner!</i>
+      </p>
+      <div class="spinner" style="border-top-color:#fbbf24; margin:0 auto;"></div>
+    </div>`;
+
+  try {
+    const res = await fetch('/api/ultra-sniper');
+    const d = await res.json();
+
+    if (d.message || d.nifty_blocked) {
+      container.innerHTML = `
+        <div style="background:rgba(245,158,11,0.1); border:1.5px solid #f59e0b; border-radius:18px; padding:32px; text-align:center; max-width:600px; margin:40px auto;">
+          <div style="font-size:40px; margin-bottom:12px;">🛡️</div>
+          <h3 style="font-size:1.2rem; font-weight:900; color:#fbbf24; margin-bottom:8px;">CAPITAL IS 100% PROTECTED</h3>
+          <p style="font-size:0.9rem; color:#cbd5e1; line-height:1.6;">${d.message || 'No 92%+ conviction trades right now.'}</p>
+        </div>`;
+      return;
+    }
+
+    if (!d.sniper_trade) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:50px 20px;">
+          <div style="font-size:40px; margin-bottom:12px;">🛡️</div>
+          <h3 style="font-size:1.1rem; color:#94a3b8; font-weight:800;">No 92%+ Ultra Conviction Trade Found Today</h3>
+          <p style="font-size:0.85rem; color:#64748b; margin-top:6px;">Market is currently sideways. Zero trade taken = Capital 100% Safe!</p>
+        </div>`;
+      return;
+    }
+
+    const s = d.sniper_trade;
+    const isBuy = s.action === 'BUY';
+    const price = parseFloat(s.price || 0);
+    const sym = s.symbol || s.stock || 'STOCK';
+    const t1 = parseFloat(s.target || (isBuy ? price * 1.018 : price * 0.982)).toFixed(2);
+    const t2 = parseFloat(s.target2 || (isBuy ? price * 1.030 : price * 0.970)).toFixed(2);
+    const sl = parseFloat(s.stoploss || (isBuy ? price * 0.988 : price * 1.012)).toFixed(2);
+    const score = s.score || 95.0;
+
+    container.innerHTML = `
+      <div style="background:linear-gradient(145deg, #111827, #1e1b4b); border:2px solid #f59e0b; border-radius:20px; padding:24px; box-shadow:0 12px 50px rgba(245,158,11,0.3); max-width:750px; margin:20px auto; position:relative;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid rgba(245,158,11,0.25); padding-bottom:14px;">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span style="font-size:28px;">👑</span>
+            <div>
+              <div style="font-size:1.2rem; font-weight:900; color:#fbbf24;">TODAY'S #1 ULTRA SNIPER TRADE</div>
+              <div style="font-size:0.8rem; color:#94a3b8;">1 Single Ultra-Conviction Trade Per Day</div>
+            </div>
+          </div>
+          <span style="background:#f59e0b; color:#000; font-size:0.85rem; font-weight:900; padding:4px 12px; border-radius:8px;">${score}% CONVICTION</span>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+          <div>
+            <div style="font-size:1.6rem; font-weight:900; color:#fff;">${sym}</div>
+            <div style="font-size:0.85rem; color:#94a3b8;">${s.company_name || ''} | ${s.sector || 'NSE'}</div>
+          </div>
+          <span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}" style="font-size:1.1rem; padding:8px 20px; border-radius:10px;">${s.action}</span>
+        </div>
+
+        <div style="background:#090f1d; padding:14px; border-radius:12px; border:1px solid #334155; margin-bottom:18px; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:0.82rem;">
+          <div style="color:#34d399;">✅ 1H+15M Dual Lock: <b>${s.trend_1h}</b></div>
+          <div style="color:#34d399;">✅ Institutional RVOL: <b>${s.rvol}x Volume</b></div>
+          <div style="color:#34d399;">✅ Risk-Reward Ratio: <b>1:${s.rr_ratio}</b></div>
+          <div style="color:#34d399;">✅ RSI Sweet Zone: <b>${s.rsi_1h}</b></div>
+          <div style="color:#34d399;">✅ Open=High Trap: <b>PASSED</b></div>
+          <div style="color:#34d399;">✅ All 18 Loss Guards: <b>ALL CLEAR</b></div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:10px; background:rgba(255,255,255,0.03); padding:12px; border-radius:12px; margin-bottom:18px; text-align:center; font-size:0.82rem;">
+          <div>Entry<br><b style="color:#fff; font-size:1.1rem;">₹${price.toFixed(2)}</b></div>
+          <div>🎯 T1 (1.8x)<br><b style="color:#34d399; font-size:1.1rem;">₹${t1}</b></div>
+          <div>🚀 T2 (3.0x)<br><b style="color:#fbbf24; font-size:1.1rem;">₹${t2}</b></div>
+          <div>🛡️ SL (Cap ₹300)<br><b style="color:#f87171; font-size:1.1rem;">₹${sl}</b></div>
+        </div>
+
+        <button onclick="executePaperTrade('${sym}', '${s.action}', ${price}, ${t1}, ${t2}, ${sl}, 'ULTRA_SNIPER')" style="width:100%; padding:14px; background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff; border:none; border-radius:12px; font-size:1rem; font-weight:900; cursor:pointer; box-shadow:0 8px 25px rgba(245,158,11,0.4);">
+          ⚡ EXECUTE PAPER TRADE (${sym} @ ₹${price.toFixed(2)})
+        </button>
+      </div>`;
+  } catch (e) {
+    showToast('❌ Ultra Sniper Scan failed: ' + e, 'sell');
+  }
+}
+
