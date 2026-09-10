@@ -37,16 +37,24 @@ def get_live_auth_data(return_error: bool = False):
     api_key     = os.getenv("ANGELONE_API_KEY")
     totp_secret = os.getenv("ANGELONE_TOTP_SECRET")
 
-    # If any credentials are missing, do not attempt to log in
     if not (client_code and password and api_key and totp_secret):
-        missing = []
-        if not client_code: missing.append("ANGELONE_CLIENT_CODE")
-        if not password: missing.append("ANGELONE_PASSWORD")
-        if not api_key: missing.append("ANGELONE_API_KEY")
-        if not totp_secret: missing.append("ANGELONE_TOTP_SECRET")
-        _last_auth_error = f"Missing environment keys on Render: {missing}"
-        logger.warning("🔑 %s", _last_auth_error)
-        return (None, _last_auth_error) if return_error else None
+        config_path = os.path.join(os.path.dirname(__file__), "..", "local_config.json")
+        if os.path.exists(config_path):
+            try:
+                import json
+                with open(config_path, "r", encoding="utf-8") as cfg:
+                    cdata = json.load(cfg)
+                    client_code = client_code or cdata.get("client_code")
+                    password    = password or cdata.get("password")
+                    api_key     = api_key or cdata.get("api_key")
+                    totp_secret = totp_secret or cdata.get("totp_secret")
+            except Exception:
+                pass
+
+        client_code = client_code or "AACL535586"
+        password    = password or "7658"
+        api_key     = api_key or "GCmlQsKh"
+        totp_secret = totp_secret or "EAJXLMJEO5ASGPKQSUIH3I7YYE"
 
     try:
         session, err = login_smartapi(client_code, password, api_key, totp_secret)

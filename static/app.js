@@ -1100,13 +1100,16 @@ async function submitQuickOrder() {
     } else if (data.browser_fallback) {
       await executeBrowserDirectOrder(data, symbol, name, _qoIsScalp);
     } else {
-      showQoError('⚠️ ' + (data.message || 'Order failed.'));
-      if (data.message && data.message.includes('Already have an open paper position')) {
+      const errMsg = data.message || data.detail || 'Order failed.';
+      showQoError('⚠️ ' + errMsg);
+      showToast('⚠️ ' + errMsg, 'sell');
+      if (data.message && (data.message.includes('Already have an open paper position') || data.message.includes('Already have an open live position'))) {
         setTimeout(() => { closeQuickOrderModal(); switchTab('paper'); }, 1200);
       }
     }
   } catch (e) {
     showQoError('❌ Network error: ' + e.message);
+    showToast('❌ Network error: ' + e.message, 'sell');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade (Angel One)' : '🚀 Confirm Paper Trade'; }
   }
