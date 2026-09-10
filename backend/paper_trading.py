@@ -341,6 +341,7 @@ def close_paper_position(
 ) -> dict:
     """
     Close an open paper position at exit_price and save P&L into DB.
+    """
     # Flexible symbol matching (supports ONGC, ONGC.NS, ONGC.BO)
     sym_base = symbol.replace(".NS", "").replace(".BO", "").strip()
     sym_ns   = f"{sym_base}.NS"
