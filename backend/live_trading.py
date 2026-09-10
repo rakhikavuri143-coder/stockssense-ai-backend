@@ -218,7 +218,13 @@ def close_live_position(
     """
     Close open live position by routing square-off order to Angel One.
     """
-    trade = db.query(LiveTrade).filter(LiveTrade.symbol == symbol, LiveTrade.status == "OPEN").first()
+    sym_base = symbol.replace(".NS", "").replace(".BO", "").strip()
+    sym_ns   = f"{sym_base}.NS"
+    sym_bo   = f"{sym_base}.BO"
+    trade = db.query(LiveTrade).filter(
+        LiveTrade.status == "OPEN",
+        LiveTrade.symbol.in_([symbol, sym_base, sym_ns, sym_bo])
+    ).first()
     if not trade:
         return {"success": False, "message": f"No open live position found for {symbol}"}
 

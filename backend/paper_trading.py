@@ -213,8 +213,11 @@ def place_paper_order(
         logger.warning("Circuit proximity check failed for %s: %s", symbol, ge)
 
 
-    if symbol in open_positions:
-        return {"success": False, "message": f"Already have an open paper position in {symbol}"}
+    sym_base = symbol.replace(".NS", "").replace(".BO", "").strip()
+    sym_ns   = f"{sym_base}.NS"
+    sym_bo   = f"{sym_base}.BO"
+    if any(s in open_positions for s in (symbol, sym_base, sym_ns, sym_bo)):
+        return {"success": False, "message": f"Already have an open paper position in {sym_base}"}
 
     # 1. Daily Drawdown Circuit Breaker (-1.5% Max Daily Capital Loss Protection)
     today_trades = db.query(PaperTrade).filter(PaperTrade.trade_date == date.today()).all()
@@ -338,8 +341,14 @@ def close_paper_position(
 ) -> dict:
     """
     Close an open paper position at exit_price and save P&L into DB.
-    """
-    trade = db.query(PaperTrade).filter(PaperTrade.symbol == symbol, PaperTrade.status == "OPEN").first()
+    # Flexible symbol matching (supports ONGC, ONGC.NS, ONGC.BO)
+    sym_base = symbol.replace(".NS", "").replace(".BO", "").strip()
+    sym_ns   = f"{sym_base}.NS"
+    sym_bo   = f"{sym_base}.BO"
+    trade = db.query(PaperTrade).filter(
+        PaperTrade.status == "OPEN",
+        PaperTrade.symbol.in_([symbol, sym_base, sym_ns, sym_bo])
+    ).first()
     if not trade:
         return {"success": False, "message": f"No open paper position found for {symbol}"}
 
