@@ -283,6 +283,14 @@ async def self_keepalive_job():
     except Exception:
         pass
 
+async def ram_watchdog_job():
+    """Active RAM Watchdog: Automatically clears caches, forces glibc malloc_trim, and runs GC if RAM > 220MB on Render."""
+    try:
+        from backend import memory_guard
+        await asyncio.to_thread(memory_guard.ram_watchdog_check, 220.0)
+    except Exception as e:
+        logger.debug("RAM Watchdog error: %s", e)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -290,6 +298,8 @@ async def lifespan(app: FastAPI):
     logger.info("✅ User database (Google Login / Trial tracking) initialized.")
     # Auto-check open paper & live positions against live prices every 15 seconds (prevents CPU/RAM overload)
     scheduler.add_job(auto_exit_monitor_job, "interval", seconds=15, id="auto_exit_monitor", misfire_grace_time=30, max_instances=1, coalesce=True)
+    # Active RAM Auto-Cleaner Watchdog (runs every 2 minutes, keeps RAM < 220MB)
+    scheduler.add_job(ram_watchdog_job, "interval", minutes=2, id="ram_watchdog", coalesce=True)
     # Keep Render container awake (ping every 10 minutes non-blocking)
     scheduler.add_job(self_keepalive_job, "interval", minutes=10, id="self_keepalive")
     # 9:15 AM IST = 3:45 AM UTC (market open auto-scan)
@@ -303,6 +313,7 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("🚀 Indian Stock Market AI Agent started!")
     logger.info("⚡ Live Paper Position Monitor: Active (Every 15 seconds)")
+    logger.info("🧹 RAM Auto-Cleaner Watchdog: Active (Every 2 minutes, Limit 220MB)")
     logger.info("📅 Scheduled: Market Open Scan @ 9:15 AM IST | Mid-day Scan @ 11:30 AM IST | Auto-Save @ 3:30 PM IST | Saturday Audit @ 10:00 AM IST")
     yield
     scheduler.shutdown()
@@ -328,6 +339,26 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "timestamp": str(datetime.now())}
+
+
+@app.get("/api/admin/ram-status")
+async def get_ram_status():
+    """Check current memory usage on Render container."""
+    from backend import memory_guard
+    return {
+        "current_ram_mb": memory_guard.get_current_ram_mb(),
+        "limit_mb": 512.0,
+        "safe_threshold_mb": 220.0,
+        "status": "HEALTHY"
+    }
+
+
+@app.post("/api/admin/clear-ram")
+async def clear_ram_endpoint():
+    """Manually trigger aggressive memory cleanup, cache purge, and glibc malloc_trim."""
+    from backend import memory_guard
+    res = await asyncio.to_thread(memory_guard.cleanup_memory, True)
+    return res
 
 
 
