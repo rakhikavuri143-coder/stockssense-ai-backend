@@ -22,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Global session cache to avoid repeating TOTP login requests
 _smartapi_session = None
-
-_smartapi_session = None
 _last_auth_error = ""
 
 def reset_live_session():

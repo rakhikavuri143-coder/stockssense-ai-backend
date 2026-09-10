@@ -30,3 +30,11 @@ data/*.db
 # Logs
 *.log
 logs/
+
+# Local Config & Temp Files
+local_config.json
+scratch/
+*.zip
+*.pdf
+generate_*.py
+resume_*
