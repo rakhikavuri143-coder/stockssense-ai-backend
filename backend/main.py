@@ -1176,7 +1176,7 @@ async def manual_paper_order(req: ManualOrderRequest, db: Session = Depends(get_
 
 class LiveOrderRequest(BaseModel):
     symbol:       str
-    company_name: str
+    company_name: Optional[str] = ""
     action:       str
     entry_price:  float
     quantity:     int
@@ -1184,6 +1184,7 @@ class LiveOrderRequest(BaseModel):
     target1:      float
     target2:      float
     signal_id:    Optional[int] = None
+    is_scalp:     Optional[bool] = False
 
 
 @app.post("/api/live/buy-sell")

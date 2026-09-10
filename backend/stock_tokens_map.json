@@ -1,0 +1,274 @@
+{
+  "RELIANCE": {
+    "token": "2885",
+    "trading_symbol": "RELIANCE-EQ"
+  },
+  "TCS": {
+    "token": "11536",
+    "trading_symbol": "TCS-EQ"
+  },
+  "HDFCBANK": {
+    "token": "1333",
+    "trading_symbol": "HDFCBANK-EQ"
+  },
+  "ICICIBANK": {
+    "token": "4963",
+    "trading_symbol": "ICICIBANK-EQ"
+  },
+  "INFY": {
+    "token": "1594",
+    "trading_symbol": "INFY-EQ"
+  },
+  "HINDUNILVR": {
+    "token": "1394",
+    "trading_symbol": "HINDUNILVR-EQ"
+  },
+  "ITC": {
+    "token": "1660",
+    "trading_symbol": "ITC-EQ"
+  },
+  "SBIN": {
+    "token": "3045",
+    "trading_symbol": "SBIN-EQ"
+  },
+  "BHARTIARTL": {
+    "token": "10604",
+    "trading_symbol": "BHARTIARTL-EQ"
+  },
+  "KOTAKBANK": {
+    "token": "1922",
+    "trading_symbol": "KOTAKBANK-EQ"
+  },
+  "LT": {
+    "token": "11483",
+    "trading_symbol": "LT-EQ"
+  },
+  "HCLTECH": {
+    "token": "7229",
+    "trading_symbol": "HCLTECH-EQ"
+  },
+  "MARUTI": {
+    "token": "10999",
+    "trading_symbol": "MARUTI-EQ"
+  },
+  "AXISBANK": {
+    "token": "5900",
+    "trading_symbol": "AXISBANK-EQ"
+  },
+  "SUNPHARMA": {
+    "token": "3351",
+    "trading_symbol": "SUNPHARMA-EQ"
+  },
+  "BAJFINANCE": {
+    "token": "317",
+    "trading_symbol": "BAJFINANCE-EQ"
+  },
+  "ULTRACEMCO": {
+    "token": "11532",
+    "trading_symbol": "ULTRACEMCO-EQ"
+  },
+  "WIPRO": {
+    "token": "3787",
+    "trading_symbol": "WIPRO-EQ"
+  },
+  "M&M": {
+    "token": "2031",
+    "trading_symbol": "M&M-EQ"
+  },
+  "NTPC": {
+    "token": "11630",
+    "trading_symbol": "NTPC-EQ"
+  },
+  "TITAN": {
+    "token": "3506",
+    "trading_symbol": "TITAN-EQ"
+  },
+  "ASIANPAINT": {
+    "token": "236",
+    "trading_symbol": "ASIANPAINT-EQ"
+  },
+  "POWERGRID": {
+    "token": "14977",
+    "trading_symbol": "POWERGRID-EQ"
+  },
+  "TATASTEEL": {
+    "token": "3499",
+    "trading_symbol": "TATASTEEL-EQ"
+  },
+  "ADANIENT": {
+    "token": "25",
+    "trading_symbol": "ADANIENT-EQ"
+  },
+  "ADANIPORTS": {
+    "token": "15083",
+    "trading_symbol": "ADANIPORTS-EQ"
+  },
+  "COALINDIA": {
+    "token": "20374",
+    "trading_symbol": "COALINDIA-EQ"
+  },
+  "ONGC": {
+    "token": "2475",
+    "trading_symbol": "ONGC-EQ"
+  },
+  "TECHM": {
+    "token": "13538",
+    "trading_symbol": "TECHM-EQ"
+  },
+  "GRASIM": {
+    "token": "1232",
+    "trading_symbol": "GRASIM-EQ"
+  },
+  "BRITANNIA": {
+    "token": "547",
+    "trading_symbol": "BRITANNIA-EQ"
+  },
+  "HDFCLIFE": {
+    "token": "467",
+    "trading_symbol": "HDFCLIFE-EQ"
+  },
+  "CIPLA": {
+    "token": "694",
+    "trading_symbol": "CIPLA-EQ"
+  },
+  "APOLLOHOSP": {
+    "token": "157",
+    "trading_symbol": "APOLLOHOSP-EQ"
+  },
+  "EICHERMOT": {
+    "token": "910",
+    "trading_symbol": "EICHERMOT-EQ"
+  },
+  "BPCL": {
+    "token": "526",
+    "trading_symbol": "BPCL-EQ"
+  },
+  "TATACONSUM": {
+    "token": "3432",
+    "trading_symbol": "TATACONSUM-EQ"
+  },
+  "JSWSTEEL": {
+    "token": "11723",
+    "trading_symbol": "JSWSTEEL-EQ"
+  },
+  "DIVISLAB": {
+    "token": "10940",
+    "trading_symbol": "DIVISLAB-EQ"
+  },
+  "DRREDDY": {
+    "token": "881",
+    "trading_symbol": "DRREDDY-EQ"
+  },
+  "INDUSINDBK": {
+    "token": "5258",
+    "trading_symbol": "INDUSINDBK-EQ"
+  },
+  "HEROMOTOCO": {
+    "token": "1348",
+    "trading_symbol": "HEROMOTOCO-EQ"
+  },
+  "HINDALCO": {
+    "token": "1363",
+    "trading_symbol": "HINDALCO-EQ"
+  },
+  "NESTLEIND": {
+    "token": "17963",
+    "trading_symbol": "NESTLEIND-EQ"
+  },
+  "BAJAJ-AUTO": {
+    "token": "16669",
+    "trading_symbol": "BAJAJ-AUTO-EQ"
+  },
+  "SHRIRAMFIN": {
+    "token": "4306",
+    "trading_symbol": "SHRIRAMFIN-EQ"
+  },
+  "SBILIFE": {
+    "token": "21808",
+    "trading_symbol": "SBILIFE-EQ"
+  },
+  "BEL": {
+    "token": "383",
+    "trading_symbol": "BEL-EQ"
+  },
+  "SUZLON": {
+    "token": "12018",
+    "trading_symbol": "SUZLON-EQ"
+  },
+  "IDFCFIRSTB": {
+    "token": "11184",
+    "trading_symbol": "IDFCFIRSTB-EQ"
+  },
+  "PNB": {
+    "token": "10666",
+    "trading_symbol": "PNB-EQ"
+  },
+  "YESBANK": {
+    "token": "11915",
+    "trading_symbol": "YESBANK-EQ"
+  },
+  "IRFC": {
+    "token": "2029",
+    "trading_symbol": "IRFC-EQ"
+  },
+  "NHPC": {
+    "token": "17400",
+    "trading_symbol": "NHPC-EQ"
+  },
+  "SAIL": {
+    "token": "2963",
+    "trading_symbol": "SAIL-EQ"
+  },
+  "IOC": {
+    "token": "1624",
+    "trading_symbol": "IOC-EQ"
+  },
+  "GMRAIRPORT": {
+    "token": "13528",
+    "trading_symbol": "GMRAIRPORT-EQ"
+  },
+  "IDBI": {
+    "token": "1476",
+    "trading_symbol": "IDBI-EQ"
+  },
+  "UCOBANK": {
+    "token": "11223",
+    "trading_symbol": "UCOBANK-EQ"
+  },
+  "UNIONBANK": {
+    "token": "10753",
+    "trading_symbol": "UNIONBANK-EQ"
+  },
+  "NBCC": {
+    "token": "31415",
+    "trading_symbol": "NBCC-EQ"
+  },
+  "SJVN": {
+    "token": "18883",
+    "trading_symbol": "SJVN-EQ"
+  },
+  "RCF": {
+    "token": "2866",
+    "trading_symbol": "RCF-EQ"
+  },
+  "FEDERALBNK": {
+    "token": "1023",
+    "trading_symbol": "FEDERALBNK-EQ"
+  },
+  "ETERNAL": {
+    "token": "5097",
+    "trading_symbol": "ETERNAL-EQ"
+  },
+  "TATAMOTORS": {
+    "token": "3456",
+    "trading_symbol": "TATAMOTORS-EQ"
+  },
+  "LTIM": {
+    "token": "17818",
+    "trading_symbol": "LTIM-EQ"
+  },
+  "HFCL": {
+    "token": "1406",
+    "trading_symbol": "HFCL-EQ"
+  }
+}

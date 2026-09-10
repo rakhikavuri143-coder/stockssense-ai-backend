@@ -265,12 +265,287 @@ def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:
         return None
 
 
-_token_map_cache = {}
+STATIC_SCRIP_TOKENS = {
+    "RELIANCE": {
+        "token": "2885",
+        "trading_symbol": "RELIANCE-EQ"
+    },
+    "TCS": {
+        "token": "11536",
+        "trading_symbol": "TCS-EQ"
+    },
+    "HDFCBANK": {
+        "token": "1333",
+        "trading_symbol": "HDFCBANK-EQ"
+    },
+    "ICICIBANK": {
+        "token": "4963",
+        "trading_symbol": "ICICIBANK-EQ"
+    },
+    "INFY": {
+        "token": "1594",
+        "trading_symbol": "INFY-EQ"
+    },
+    "HINDUNILVR": {
+        "token": "1394",
+        "trading_symbol": "HINDUNILVR-EQ"
+    },
+    "ITC": {
+        "token": "1660",
+        "trading_symbol": "ITC-EQ"
+    },
+    "SBIN": {
+        "token": "3045",
+        "trading_symbol": "SBIN-EQ"
+    },
+    "BHARTIARTL": {
+        "token": "10604",
+        "trading_symbol": "BHARTIARTL-EQ"
+    },
+    "KOTAKBANK": {
+        "token": "1922",
+        "trading_symbol": "KOTAKBANK-EQ"
+    },
+    "LT": {
+        "token": "11483",
+        "trading_symbol": "LT-EQ"
+    },
+    "HCLTECH": {
+        "token": "7229",
+        "trading_symbol": "HCLTECH-EQ"
+    },
+    "MARUTI": {
+        "token": "10999",
+        "trading_symbol": "MARUTI-EQ"
+    },
+    "AXISBANK": {
+        "token": "5900",
+        "trading_symbol": "AXISBANK-EQ"
+    },
+    "SUNPHARMA": {
+        "token": "3351",
+        "trading_symbol": "SUNPHARMA-EQ"
+    },
+    "BAJFINANCE": {
+        "token": "317",
+        "trading_symbol": "BAJFINANCE-EQ"
+    },
+    "ULTRACEMCO": {
+        "token": "11532",
+        "trading_symbol": "ULTRACEMCO-EQ"
+    },
+    "WIPRO": {
+        "token": "3787",
+        "trading_symbol": "WIPRO-EQ"
+    },
+    "M&M": {
+        "token": "2031",
+        "trading_symbol": "M&M-EQ"
+    },
+    "NTPC": {
+        "token": "11630",
+        "trading_symbol": "NTPC-EQ"
+    },
+    "TITAN": {
+        "token": "3506",
+        "trading_symbol": "TITAN-EQ"
+    },
+    "ASIANPAINT": {
+        "token": "236",
+        "trading_symbol": "ASIANPAINT-EQ"
+    },
+    "POWERGRID": {
+        "token": "14977",
+        "trading_symbol": "POWERGRID-EQ"
+    },
+    "TATASTEEL": {
+        "token": "3499",
+        "trading_symbol": "TATASTEEL-EQ"
+    },
+    "ADANIENT": {
+        "token": "25",
+        "trading_symbol": "ADANIENT-EQ"
+    },
+    "ADANIPORTS": {
+        "token": "15083",
+        "trading_symbol": "ADANIPORTS-EQ"
+    },
+    "COALINDIA": {
+        "token": "20374",
+        "trading_symbol": "COALINDIA-EQ"
+    },
+    "ONGC": {
+        "token": "2475",
+        "trading_symbol": "ONGC-EQ"
+    },
+    "TECHM": {
+        "token": "13538",
+        "trading_symbol": "TECHM-EQ"
+    },
+    "GRASIM": {
+        "token": "1232",
+        "trading_symbol": "GRASIM-EQ"
+    },
+    "BRITANNIA": {
+        "token": "547",
+        "trading_symbol": "BRITANNIA-EQ"
+    },
+    "HDFCLIFE": {
+        "token": "467",
+        "trading_symbol": "HDFCLIFE-EQ"
+    },
+    "CIPLA": {
+        "token": "694",
+        "trading_symbol": "CIPLA-EQ"
+    },
+    "APOLLOHOSP": {
+        "token": "157",
+        "trading_symbol": "APOLLOHOSP-EQ"
+    },
+    "EICHERMOT": {
+        "token": "910",
+        "trading_symbol": "EICHERMOT-EQ"
+    },
+    "BPCL": {
+        "token": "526",
+        "trading_symbol": "BPCL-EQ"
+    },
+    "TATACONSUM": {
+        "token": "3432",
+        "trading_symbol": "TATACONSUM-EQ"
+    },
+    "JSWSTEEL": {
+        "token": "11723",
+        "trading_symbol": "JSWSTEEL-EQ"
+    },
+    "DIVISLAB": {
+        "token": "10940",
+        "trading_symbol": "DIVISLAB-EQ"
+    },
+    "DRREDDY": {
+        "token": "881",
+        "trading_symbol": "DRREDDY-EQ"
+    },
+    "INDUSINDBK": {
+        "token": "5258",
+        "trading_symbol": "INDUSINDBK-EQ"
+    },
+    "HEROMOTOCO": {
+        "token": "1348",
+        "trading_symbol": "HEROMOTOCO-EQ"
+    },
+    "HINDALCO": {
+        "token": "1363",
+        "trading_symbol": "HINDALCO-EQ"
+    },
+    "NESTLEIND": {
+        "token": "17963",
+        "trading_symbol": "NESTLEIND-EQ"
+    },
+    "BAJAJ-AUTO": {
+        "token": "16669",
+        "trading_symbol": "BAJAJ-AUTO-EQ"
+    },
+    "SHRIRAMFIN": {
+        "token": "4306",
+        "trading_symbol": "SHRIRAMFIN-EQ"
+    },
+    "SBILIFE": {
+        "token": "21808",
+        "trading_symbol": "SBILIFE-EQ"
+    },
+    "BEL": {
+        "token": "383",
+        "trading_symbol": "BEL-EQ"
+    },
+    "SUZLON": {
+        "token": "12018",
+        "trading_symbol": "SUZLON-EQ"
+    },
+    "IDFCFIRSTB": {
+        "token": "11184",
+        "trading_symbol": "IDFCFIRSTB-EQ"
+    },
+    "PNB": {
+        "token": "10666",
+        "trading_symbol": "PNB-EQ"
+    },
+    "YESBANK": {
+        "token": "11915",
+        "trading_symbol": "YESBANK-EQ"
+    },
+    "IRFC": {
+        "token": "2029",
+        "trading_symbol": "IRFC-EQ"
+    },
+    "NHPC": {
+        "token": "17400",
+        "trading_symbol": "NHPC-EQ"
+    },
+    "SAIL": {
+        "token": "2963",
+        "trading_symbol": "SAIL-EQ"
+    },
+    "IOC": {
+        "token": "1624",
+        "trading_symbol": "IOC-EQ"
+    },
+    "GMRAIRPORT": {
+        "token": "13528",
+        "trading_symbol": "GMRAIRPORT-EQ"
+    },
+    "IDBI": {
+        "token": "1476",
+        "trading_symbol": "IDBI-EQ"
+    },
+    "UCOBANK": {
+        "token": "11223",
+        "trading_symbol": "UCOBANK-EQ"
+    },
+    "UNIONBANK": {
+        "token": "10753",
+        "trading_symbol": "UNIONBANK-EQ"
+    },
+    "NBCC": {
+        "token": "31415",
+        "trading_symbol": "NBCC-EQ"
+    },
+    "SJVN": {
+        "token": "18883",
+        "trading_symbol": "SJVN-EQ"
+    },
+    "RCF": {
+        "token": "2866",
+        "trading_symbol": "RCF-EQ"
+    },
+    "FEDERALBNK": {
+        "token": "1023",
+        "trading_symbol": "FEDERALBNK-EQ"
+    },
+    "ETERNAL": {
+        "token": "5097",
+        "trading_symbol": "ETERNAL-EQ"
+    },
+    "TATAMOTORS": {
+        "token": "3456",
+        "trading_symbol": "TATAMOTORS-EQ"
+    },
+    "LTIM": {
+        "token": "17818",
+        "trading_symbol": "LTIM-EQ"
+    },
+    "HFCL": {
+        "token": "1406",
+        "trading_symbol": "HFCL-EQ"
+    }
+}
+
+_token_map_cache = dict(STATIC_SCRIP_TOKENS)
 
 def fetch_and_cache_tokens() -> dict:
-    """Download and cache Angel One scrip master tokens for NSE Equity."""
+    """Download and cache Angel One scrip master tokens for NSE Equity (fallback)."""
     global _token_map_cache
-    if _token_map_cache:
+    if len(_token_map_cache) > len(STATIC_SCRIP_TOKENS):
         return _token_map_cache
     
     url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
@@ -279,45 +554,37 @@ def fetch_and_cache_tokens() -> dict:
         response = httpx.get(url, timeout=10.0)
         if response.status_code == 200:
             scrip_list = response.json()
-            temp_map = {}
+            temp_map = dict(STATIC_SCRIP_TOKENS)
             for item in scrip_list:
                 if item.get("exch_seg") == "NSE" and item.get("symbol", "").endswith("-EQ"):
                     base_name = item["symbol"].replace("-EQ", "")
-                    temp_map[base_name] = {
-                        "token": item["token"],
-                        "trading_symbol": item["symbol"]
-                    }
+                    temp_map[base_name] = {"token": item["token"], "trading_symbol": item["symbol"]}
             _token_map_cache = temp_map
             logger.info("✅ Cached %d NSE Equity tokens in memory.", len(_token_map_cache))
             return _token_map_cache
     except Exception as e:
-        logger.error("❌ Failed to cache Scrip Master: %s. Using hardcoded fallbacks.", e)
-    return {}
+        logger.warning("⚠️ Could not refresh Scrip Master online (%s). Using static token map (%d stocks).", e, len(STATIC_SCRIP_TOKENS))
+    return _token_map_cache
 
 
 def get_angelone_token_and_symbol(yahoo_symbol: str) -> tuple[Optional[str], Optional[str]]:
     """
-    Given a Yahoo Finance symbol like 'RELIANCE.NS', return (token, tradingsymbol) for Angel One.
-    e.g., 'RELIANCE.NS' -> ('3045', 'RELIANCE-EQ')
+    Given a Yahoo Finance symbol like 'IDFCFIRSTB.NS' or 'RELIANCE', return (token, tradingsymbol) for Angel One.
+    e.g., 'IDFCFIRSTB.NS' -> ('11184', 'IDFCFIRSTB-EQ')
     """
     base = yahoo_symbol.upper().replace(".NS", "").replace(".BO", "").strip()
     
-    # Try cache first
+    # 1. Check static high-speed map (instant 0ms lookup)
+    if base in STATIC_SCRIP_TOKENS:
+        return STATIC_SCRIP_TOKENS[base]["token"], STATIC_SCRIP_TOKENS[base]["trading_symbol"]
+    
+    # 2. Check dynamic cache
+    if base in _token_map_cache:
+        return _token_map_cache[base]["token"], _token_map_cache[base]["trading_symbol"]
+    
+    # 3. Fallback to online download if unknown stock
     cache = fetch_and_cache_tokens()
     if base in cache:
         return cache[base]["token"], cache[base]["trading_symbol"]
-    
-    # Hardcoded fallbacks for testing or if download fails
-    fallbacks = {
-        "IDEA": ("14366", "IDEA-EQ"),
-        "RELIANCE": ("3045", "RELIANCE-EQ"),
-        "TCS": ("11536", "TCS-EQ"),
-        "SBIN": ("3063", "SBIN-EQ"),
-        "WIPRO": ("3787", "WIPRO-EQ"),
-        "ADANIPORTS": ("15083", "ADANIPORTS-EQ")
-    }
-    if base in fallbacks:
-        return fallbacks[base]
         
     return None, None
-
