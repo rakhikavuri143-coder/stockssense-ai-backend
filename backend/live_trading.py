@@ -38,10 +38,13 @@ def get_live_auth_data(return_error: bool = False, force_refresh: bool = False):
     if _smartapi_session and not force_refresh:
         return (_smartapi_session, "") if return_error else _smartapi_session
 
-    client_code = os.getenv("ANGELONE_CLIENT_CODE")
-    password    = os.getenv("ANGELONE_PASSWORD")
-    api_key     = os.getenv("ANGELONE_API_KEY")
-    totp_secret = os.getenv("ANGELONE_TOTP_SECRET")
+    def _valid(val):
+        return val and str(val).strip() and not str(val).strip().startswith("your_")
+
+    client_code = os.getenv("ANGELONE_CLIENT_CODE") if _valid(os.getenv("ANGELONE_CLIENT_CODE")) else None
+    password    = os.getenv("ANGELONE_PASSWORD") if _valid(os.getenv("ANGELONE_PASSWORD")) else None
+    api_key     = os.getenv("ANGELONE_API_KEY") if _valid(os.getenv("ANGELONE_API_KEY")) else None
+    totp_secret = os.getenv("ANGELONE_TOTP_SECRET") if _valid(os.getenv("ANGELONE_TOTP_SECRET")) else None
 
     if not (client_code and password and api_key and totp_secret):
         config_path = os.path.join(os.path.dirname(__file__), "..", "local_config.json")
