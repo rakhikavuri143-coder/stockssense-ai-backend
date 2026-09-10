@@ -4,6 +4,7 @@ services:
     env: python
     buildCommand: pip install --no-cache-dir -r requirements.txt
     startCommand: python run_server.py
+    healthCheckPath: /health
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
