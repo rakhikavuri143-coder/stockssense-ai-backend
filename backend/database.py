@@ -168,6 +168,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    try:
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE paper_trades ALTER COLUMN status TYPE VARCHAR(50);"))
+            conn.execute(text("ALTER TABLE live_trades ALTER COLUMN status TYPE VARCHAR(50);"))
+            logger.info("✅ Database column status migration complete (VARCHAR(50)).")
+    except Exception as ex:
+        logger.warning("Migration note: %s", ex)
     logger.info("✅ Database tables initialized.")
 
 

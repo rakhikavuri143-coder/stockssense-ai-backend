@@ -472,7 +472,7 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
         # EOD Auto-Squareoff at 3:10 PM IST
         if is_eod_squareoff_time:
 
-            res = close_paper_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
+            res = close_paper_position(db, symbol, price, exit_reason="EOD_SQUAREOFF")
             results.append(res)
             _peak_prices.pop(trade_id, None)
             continue
@@ -482,7 +482,7 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
             m_depth, low_circuit = get_circuit_and_depth_simulator(symbol, price)
             guard_status = circuit_and_liquidity_guard(m_depth, price, low_circuit)
             if guard_status == "EMERGENCY_EXIT":
-                res = close_paper_position(db, symbol, price, exit_reason="CIRCUIT_EMERGENCY_EXIT")
+                res = close_paper_position(db, symbol, price, exit_reason="CIRCUIT_EXIT")
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
