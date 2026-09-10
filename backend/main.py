@@ -290,7 +290,7 @@ async def lifespan(app: FastAPI):
     init_user_db()
     logger.info("✅ User database (Google Login / Trial tracking) initialized.")
     # Auto-check open paper positions against live prices every 5 seconds
-    scheduler.add_job(auto_exit_monitor_job, "interval", seconds=5, id="auto_exit_monitor")
+    scheduler.add_job(auto_exit_monitor_job, "interval", seconds=5, id="auto_exit_monitor", misfire_grace_time=30, max_instances=2, coalesce=True)
     # Keep Render container awake (ping every 10 minutes)
     scheduler.add_job(self_keepalive_job, "interval", minutes=10, id="self_keepalive")
     # 9:15 AM IST = 3:45 AM UTC (market open auto-scan)

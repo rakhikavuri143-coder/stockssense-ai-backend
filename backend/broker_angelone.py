@@ -47,7 +47,7 @@ def get_server_public_ip() -> str:
         _SERVER_PUBLIC_IP = env_ip.strip()
         return _SERVER_PUBLIC_IP
 
-    _SERVER_PUBLIC_IP = "157.50.91.3"
+    _SERVER_PUBLIC_IP = "216.24.57.252"
     return _SERVER_PUBLIC_IP
 
 
@@ -106,7 +106,7 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
         for url in endpoints:
             try:
                 response = client.post(url, json=payload, headers=headers)
-                data = response.json()
+                data = _safe_json(response)
                 
                 if data.get("status") is True and "data" in data:
                     tokens = data["data"]
@@ -120,7 +120,7 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
                     }
                     return session, ""
                 else:
-                    msg = data.get("message") or "Auth Failed"
+                    msg = data.get("message") or f"Auth Failed (HTTP {response.status_code})"
                     errcode = data.get("errorcode") or data.get("errorCode") or ""
                     last_err = f"{msg} (Code: {errcode})" if errcode else msg
                     logger.warning("⚠️ Angel One login failed on endpoint %s: %s", url, last_err)
@@ -178,18 +178,27 @@ def place_smartapi_order(
     try:
         with get_httpx_client(timeout=10.0) as client:
             response = client.post(url, json=payload, headers=headers)
-            data = response.json()
+            data = _safe_json(response)
             if data.get("status") is True and "data" in data:
                 order_id = data["data"].get("uniqueorderid") or data["data"].get("orderid")
                 logger.info("✅ Order placed successfully! Order ID: %s", order_id)
                 return {"success": True, "order_id": order_id, "message": "Order placed successfully"}
             else:
-                logger.error("❌ Order placement failed: %s", data.get("message"))
-                return {"success": False, "message": data.get("message", "Unknown error")}
+                msg = data.get("message") or f"Execution Failed (HTTP {response.status_code})"
+                logger.error("❌ Order placement failed: %s", msg)
+                return {"success": False, "message": msg}
     except Exception as e:
         logger.error("Exception during order placement: %s", e)
         return {"success": False, "message": str(e)}
 
+
+def _safe_json(response) -> dict:
+    if response and hasattr(response, "text") and response.text and response.text.strip():
+        try:
+            return response.json()
+        except Exception:
+            pass
+    return {}
 
 def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
     """
@@ -212,14 +221,15 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
     try:
         with get_httpx_client(timeout=10.0) as client:
             response = client.get(url, headers=headers)
-            data = response.json()
+            data = _safe_json(response)
             if data.get("status") is True:
                 return data.get("data", [])
             else:
-                logger.error("❌ Failed to fetch positions: %s", data.get("message"))
+                if data.get("message"):
+                    logger.warning("⚠️ Could not fetch positions: %s", data.get("message"))
                 return None
     except Exception as e:
-        logger.error("Exception fetching positions: %s", e)
+        logger.warning("Note: Exception fetching positions: %s", e)
         return None
 
 
@@ -243,14 +253,15 @@ def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:
     try:
         with get_httpx_client(timeout=10.0) as client:
             response = client.get(url, headers=headers)
-            data = response.json()
+            data = _safe_json(response)
             if data.get("status") is True and "data" in data:
                 return data.get("data", {})
             else:
-                logger.error("❌ Failed to fetch RMS funds: %s", data.get("message"))
+                if data.get("message"):
+                    logger.warning("⚠️ Could not fetch RMS funds: %s", data.get("message"))
                 return None
     except Exception as e:
-        logger.error("Exception fetching RMS funds: %s", e)
+        logger.warning("Note: Exception fetching RMS funds: %s", e)
         return None
 
 
