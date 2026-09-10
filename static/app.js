@@ -1150,12 +1150,17 @@ async function submitQuickOrder() {
   const btn = document.getElementById('qo_submit_btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Placing Order…'; }
 
+  // Abort fetch after 20s to prevent infinite "Placing Order..." stuck
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
+
   try {
     const cleanSignalId = (signalId && signalId !== 'null' && !isNaN(signalId)) ? parseInt(signalId, 10) : null;
     const endpoint = currentMode === 'live' ? '/api/live/buy-sell' : '/api/paper/buy-sell';
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
+      signal: controller.signal,
       body: JSON.stringify({
         symbol, company_name: name, action, entry_price: price,
         quantity: qty, stop_loss: sl, target1: t1, target2: t2,
@@ -1163,6 +1168,7 @@ async function submitQuickOrder() {
         is_scalp: _qoIsScalp,
       }),
     });
+    clearTimeout(timeoutId);
     const data = await res.json();
     if (data.success) {
       showOrderConfirmation({
@@ -1188,8 +1194,14 @@ async function submitQuickOrder() {
       }
     }
   } catch (e) {
-    showQoError('❌ Network error: ' + e.message);
-    showToast('❌ Network error: ' + e.message, 'sell');
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      showQoError('⚠️ Order request timed out (20s). Please check Angel One app to confirm if order was placed, then try again.');
+      showToast('⚠️ Request timed out — check Angel One app!', 'sell');
+    } else {
+      showQoError('❌ Network error: ' + e.message);
+      showToast('❌ Network error: ' + e.message, 'sell');
+    }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade (Angel One)' : '🚀 Confirm Paper Trade'; }
   }
@@ -1984,17 +1996,23 @@ async function submitManualTrade() {
   btn.disabled    = true;
   btn.textContent = 'Placing trade…';
 
+  // Abort fetch after 20s to prevent infinite "Placing trade..." stuck
+  const mtController = new AbortController();
+  const mtTimeoutId = setTimeout(() => mtController.abort(), 20000);
+
   try {
     const endpoint = currentMode === 'live' ? '/api/live/buy-sell' : '/api/paper/manual-order';
     const res  = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
+      signal: mtController.signal,
       body: JSON.stringify({
         symbol: _mtSymbol, action,
         entry_price: price, quantity: qty,
         stop_loss: sl, target1: t1, target2: t2,
       }),
     });
+    clearTimeout(mtTimeoutId);
     const data = await res.json();
     if (data.success) {
       showOrderConfirmation({
@@ -2014,7 +2032,12 @@ async function submitManualTrade() {
       showMtError(data.message || 'Order failed.');
     }
   } catch (e) {
-    showMtError('Network error: ' + e.message);
+    clearTimeout(mtTimeoutId);
+    if (e.name === 'AbortError') {
+      showMtError('⚠️ Order request timed out (20s). Please check Angel One app to confirm if order was placed, then try again.');
+    } else {
+      showMtError('Network error: ' + e.message);
+    }
   } finally {
     btn.disabled    = false;
     btn.textContent = currentMode === 'live' ? '🚀 Confirm LIVE Trade (Angel One)' : '🚀 Place Paper Trade';

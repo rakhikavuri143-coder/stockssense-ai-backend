@@ -1189,12 +1189,20 @@ class LiveOrderRequest(BaseModel):
 @app.post("/api/live/buy-sell")
 async def live_order(req: LiveOrderRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
     from backend import live_trading
-    result = live_trading.place_live_order(
-        db=db, symbol=req.symbol, company_name=req.company_name,
-        action=req.action, entry_price=req.entry_price, quantity=req.quantity,
-        stop_loss=req.stop_loss, target1=req.target1, target2=req.target2,
-        signal_id=req.signal_id,
-    )
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                live_trading.place_live_order,
+                db=db, symbol=req.symbol, company_name=req.company_name,
+                action=req.action, entry_price=req.entry_price, quantity=req.quantity,
+                stop_loss=req.stop_loss, target1=req.target1, target2=req.target2,
+                signal_id=req.signal_id,
+            ),
+            timeout=18.0
+        )
+    except asyncio.TimeoutError:
+        logger.error("❌ live_order timed out after 18s for %s", req.symbol)
+        return {"success": False, "message": "❌ Order request timed out (18s). Please check Angel One app and try again."}
     return result
 
 

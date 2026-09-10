@@ -176,7 +176,7 @@ def place_smartapi_order(
     }
 
     try:
-        with get_httpx_client(timeout=10.0) as client:
+        with get_httpx_client(timeout=7.0) as client:
             response = client.post(url, json=payload, headers=headers)
             data = _safe_json(response)
             if data.get("status") is True and "data" in data:
