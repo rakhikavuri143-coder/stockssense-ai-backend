@@ -2373,6 +2373,12 @@ async function startUltraSniperScan() {
     const sl = parseFloat(s.stoploss || (isBuy ? price * 0.988 : price * 1.012)).toFixed(2);
     const score = s.score || 95.0;
 
+    const isLiveMode = currentMode === 'live';
+    const btnLabel   = isLiveMode ? `⚡ EXECUTE LIVE TRADE (Angel One MIS - ${sym} @ ₹${price.toFixed(2)})` : `📝 EXECUTE PAPER TRADE (${sym} @ ₹${price.toFixed(2)})`;
+    const btnBg      = isLiveMode ? 'linear-gradient(135deg,#7c3aed,#4f46e5)' : 'linear-gradient(135deg,#f59e0b,#d97706)';
+    const btnShadow  = isLiveMode ? '0 8px 25px rgba(124,58,237,0.4)' : '0 8px 25px rgba(245,158,11,0.4)';
+    const safeComp   = (s.company_name || sym).replace(/'/g, "\\'");
+
     container.innerHTML = `
       <div style="background:linear-gradient(145deg, #111827, #1e1b4b); border:2px solid #f59e0b; border-radius:20px; padding:24px; box-shadow:0 12px 50px rgba(245,158,11,0.3); max-width:750px; margin:20px auto; position:relative;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; border-bottom:1px solid rgba(245,158,11,0.25); padding-bottom:14px;">
@@ -2380,7 +2386,7 @@ async function startUltraSniperScan() {
             <span style="font-size:28px;">👑</span>
             <div>
               <div style="font-size:1.2rem; font-weight:900; color:#fbbf24;">TODAY'S #1 ULTRA SNIPER TRADE</div>
-              <div style="font-size:0.8rem; color:#94a3b8;">1 Single Ultra-Conviction Trade Per Day</div>
+              <div style="font-size:0.8rem; color:#94a3b8;">1 Single Ultra-Conviction Trade Per Day (${isLiveMode ? '💼 Live Angel One Mode' : '📝 Paper Trading Mode'})</div>
             </div>
           </div>
           <span style="background:#f59e0b; color:#000; font-size:0.85rem; font-weight:900; padding:4px 12px; border-radius:8px;">${score}% CONVICTION</span>
@@ -2410,8 +2416,8 @@ async function startUltraSniperScan() {
           <div>🛡️ SL (Cap ₹300)<br><b style="color:#f87171; font-size:1.1rem;">₹${sl}</b></div>
         </div>
 
-        <button onclick="executePaperTrade('${sym}', '${s.action}', ${price}, ${t1}, ${t2}, ${sl}, 'ULTRA_SNIPER')" style="width:100%; padding:14px; background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff; border:none; border-radius:12px; font-size:1rem; font-weight:900; cursor:pointer; box-shadow:0 8px 25px rgba(245,158,11,0.4);">
-          ⚡ EXECUTE PAPER TRADE (${sym} @ ₹${price.toFixed(2)})
+        <button onclick="openQuickOrderModal(null, '${sym}', '${safeComp}', '${s.action}', ${price}, ${sl}, ${t1}, ${t2}, false)" style="width:100%; padding:14px; background:${btnBg}; color:#fff; border:none; border-radius:12px; font-size:1rem; font-weight:900; cursor:pointer; box-shadow:${btnShadow};">
+          ${btnLabel}
         </button>
       </div>`;
   } catch (e) {
