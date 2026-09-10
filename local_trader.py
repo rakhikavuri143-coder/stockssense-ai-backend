@@ -356,11 +356,6 @@ def run_ultra_sniper_scan() -> dict:
             "message": market_msg
         }
 
-    if not DEEP_AI_AVAILABLE:
-        return {"sniper_trade": None, "total_scanned": 0,
-                "error": "Deep AI Engine backend modules missing."}
-
-    # Time Window Check (11:30 AM - 1:30 PM Intraday Lunch Trap)
     ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     time_str = ist_now.strftime("%H:%M")
     is_lunch_trap = "11:30" <= time_str <= "13:30"

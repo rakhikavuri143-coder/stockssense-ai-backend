@@ -289,8 +289,8 @@ async def lifespan(app: FastAPI):
     init_db()
     init_user_db()
     logger.info("✅ User database (Google Login / Trial tracking) initialized.")
-    # Auto-check open paper positions against live prices every 15 seconds
-    scheduler.add_job(auto_exit_monitor_job, "interval", seconds=15, id="auto_exit_monitor")
+    # Auto-check open paper positions against live prices every 5 seconds
+    scheduler.add_job(auto_exit_monitor_job, "interval", seconds=5, id="auto_exit_monitor")
     # Keep Render container awake (ping every 10 minutes)
     scheduler.add_job(self_keepalive_job, "interval", minutes=10, id="self_keepalive")
     # 9:15 AM IST = 3:45 AM UTC (market open auto-scan)
@@ -367,36 +367,84 @@ async def get_nifty_status():
 
 @app.get("/api/stock-price/{symbol}")
 async def get_stock_price(symbol: str):
-    """Fetch live price + basic info for a symbol (for manual trade modal)."""
+    """Fetch live price + basic info for a symbol with multi-source failover."""
     import yfinance as yf
+    import urllib.request, json
     sym = symbol.upper().strip()
     if not sym.endswith(".NS") and not sym.endswith(".BO"):
         sym = sym + ".NS"
+
+    price = None
+    day_high = 0.0
+    day_low = 0.0
+    prev_close = 0.0
+
+    # 1. Direct Yahoo REST Chart Endpoint (fastest, 50ms)
     try:
-        ticker = yf.Ticker(sym)
-        info   = ticker.fast_info
-        price  = round(float(info.last_price), 2)
-        day_high  = round(float(info.day_high), 2)
-        day_low   = round(float(info.day_low), 2)
-        prev_close = round(float(info.previous_close), 2)
-        # Suggest SL = 1.5% below (BUY) and T1/T2 based on ATR-lite
-        atr_pct = 0.015
-        sl_buy  = round(price * (1 - atr_pct), 2)
-        t1_buy  = round(price * (1 + atr_pct * 2), 2)
-        t2_buy  = round(price * (1 + atr_pct * 3.5), 2)
-        sl_sell = round(price * (1 + atr_pct), 2)
-        t1_sell = round(price * (1 - atr_pct * 2), 2)
-        t2_sell = round(price * (1 - atr_pct * 3.5), 2)
-        return {
-            "symbol": sym, "price": price,
-            "day_high": day_high, "day_low": day_low, "prev_close": prev_close,
-            "suggestions": {
-                "BUY":  {"sl": sl_buy,  "t1": t1_buy,  "t2": t2_buy},
-                "SELL": {"sl": sl_sell, "t1": t1_sell, "t2": t2_sell},
-            }
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            raw = json.loads(resp.read().decode())
+            meta = raw.get("chart", {}).get("result", [{}])[0].get("meta", {})
+            p = meta.get("regularMarketPrice")
+            if p and isinstance(p, (int, float)) and p > 0:
+                price = float(p)
+                prev_close = float(meta.get("previousClose") or meta.get("chartPreviousClose") or price)
+                day_high = float(meta.get("regularMarketDayHigh") or price)
+                day_low = float(meta.get("regularMarketDayLow") or price)
+    except Exception as ex:
+        logger.warning("Direct Yahoo REST failed for %s: %s", sym, ex)
+
+    # 2. yfinance fast_info fallback
+    if price is None or price <= 0:
+        try:
+            ticker = yf.Ticker(sym)
+            info = ticker.fast_info
+            if info:
+                price = float(getattr(info, "last_price", 0) or getattr(info, "lastPrice", 0) or 0)
+                day_high = float(getattr(info, "day_high", price) or price)
+                day_low = float(getattr(info, "day_low", price) or price)
+                prev_close = float(getattr(info, "previous_close", price) or price)
+        except Exception as ex:
+            logger.warning("yfinance fast_info failed for %s: %s", sym, ex)
+
+    # 3. yfinance history fallback
+    if price is None or price <= 0:
+        try:
+            ticker = yf.Ticker(sym)
+            hist = ticker.history(period="1d", interval="1m")
+            if not hist.empty:
+                price = float(hist["Close"].iloc[-1])
+                day_high = float(hist["High"].max())
+                day_low = float(hist["Low"].min())
+                prev_close = price
+        except Exception as ex:
+            logger.warning("yfinance history failed for %s: %s", sym, ex)
+
+    if price is None or price <= 0:
+        raise HTTPException(status_code=404, detail=f"Price fetch failed for {sym}")
+
+    price = round(price, 2)
+    day_high = round(day_high or price, 2)
+    day_low = round(day_low or price, 2)
+    prev_close = round(prev_close or price, 2)
+
+    atr_pct = 0.015
+    sl_buy  = round(price * (1 - atr_pct), 2)
+    t1_buy  = round(price * (1 + atr_pct * 2), 2)
+    t2_buy  = round(price * (1 + atr_pct * 3.5), 2)
+    sl_sell = round(price * (1 + atr_pct), 2)
+    t1_sell = round(price * (1 - atr_pct * 2), 2)
+    t2_sell = round(price * (1 - atr_pct * 3.5), 2)
+
+    return {
+        "symbol": sym, "price": price,
+        "day_high": day_high, "day_low": day_low, "prev_close": prev_close,
+        "suggestions": {
+            "BUY":  {"sl": sl_buy,  "t1": t1_buy,  "t2": t2_buy},
+            "SELL": {"sl": sl_sell, "t1": t1_sell, "t2": t2_sell},
         }
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Price fetch failed: {e}")
+    }
 
 
 # ─────────────────────────── API: ANALYZE ────────────────────────────

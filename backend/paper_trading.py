@@ -484,13 +484,15 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
         # 🚨 Hard Rupee SL Circuit Breaker (Max ₹300 Loss Cap per trade)
         qty = pos.get("quantity", 1)
         entry_p = pos.get("entry_price", price)
+        sl_p = pos.get("stop_loss", 0.0)
         current_pnl = (price - entry_p) * qty if action == "BUY" else (entry_p - price) * qty
-        if current_pnl <= -300.0:
-            res = close_paper_position(db, symbol, price, exit_reason="HARD_SL_CIRCUIT_BREAKER")
+        is_sl_breached = (action == "BUY" and price <= sl_p) or (action == "SELL" and price >= sl_p) if sl_p > 0 else False
+        if current_pnl <= -290.0 or is_sl_breached:
+            res = close_paper_position(db, symbol, price, exit_reason="HARD_SL_CIRCUIT_BREAKER" if current_pnl <= -290.0 else "SL_HIT")
             results.append(res)
             _peak_prices.pop(trade_id, None)
             _peak_pnl.pop(trade_id, None)
-            logger.info("🚨 Hard ₹300 SL Circuit Breaker triggered for %s (PnL: ₹%.2f). Auto-closed immediately.", symbol, current_pnl)
+            logger.info("🚨 Hard SL / Loss Breaker triggered for %s (PnL: ₹%.2f, CMP: ₹%.2f, SL: ₹%.2f). Auto-closed immediately.", symbol, current_pnl, price, sl_p)
             continue
 
 

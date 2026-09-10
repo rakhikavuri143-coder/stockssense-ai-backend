@@ -42,12 +42,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 5 * 60 * 1000);
 
-  // Poll portfolio every 15 seconds for live P&L sync (only if unlocked)
+  // Fast poll portfolio every 3 seconds for real-time loss guard & P&L sync (only if unlocked)
   setInterval(() => {
     if (localStorage.getItem('ss_private_auth') === 'unlocked_owner') {
       loadPortfolio();
     }
-  }, 15 * 1000);
+  }, 3 * 1000);
 });
 
 function setupNetworkAutoReconnect() {
