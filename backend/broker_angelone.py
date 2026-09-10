@@ -157,7 +157,7 @@ def place_smartapi_order(
         "ordertype": order_type.upper(),
         "producttype": product_type.upper(),
         "duration": "DAY",
-        "price": str(round(price, 2)),
+        "price": str(round(price, 2)) if order_type.upper() == "LIMIT" else "0",
         "quantity": str(quantity),
         "squareoff": "0.00",
         "stoploss": "0.00"

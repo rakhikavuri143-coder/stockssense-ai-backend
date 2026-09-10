@@ -986,7 +986,7 @@ async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
         "X-UserType": "USER",
         "X-SourceID": "WEB",
         "X-ClientLocalIP": "127.0.0.1",
-        "X-ClientPublicIP": "157.50.91.3",
+        "X-ClientPublicIP": data.client_public_ip || "216.24.57.252",
         "X-MACaddress": "fe-80-00-00-00-00",
         "MACAddress": "fe-80-00-00-00-00"
       },
@@ -999,7 +999,7 @@ async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
         ordertype: "MARKET",
         producttype: "INTRADAY",
         duration: "DAY",
-        price: String(data.price.toFixed(2)),
+        price: "0",
         quantity: String(data.quantity),
         squareoff: "0.00",
         stoploss: "0.00"

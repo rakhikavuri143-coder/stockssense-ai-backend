@@ -174,6 +174,7 @@ def place_live_order(
             resp["stop_loss"] = stop_loss
             resp["target1"] = target1
             resp["target2"] = target2
+            resp["client_public_ip"] = get_server_public_ip()
         return resp
 
     order_id = order_res.get("order_id")
