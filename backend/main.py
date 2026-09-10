@@ -355,6 +355,18 @@ async def get_budget_stocks():
 
 
 
+@app.get("/api/outbound-ip")
+async def get_outbound_ip():
+    """Fetch Render server outbound public IP."""
+    import urllib.request, json
+    try:
+        req = urllib.request.Request("https://api.ipify.org?format=json", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            return {"server_ip": data.get("ip")}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/api/nifty-status")
 async def get_nifty_status():
     """Check Nifty 50 macro trend guard status + Market open status."""
