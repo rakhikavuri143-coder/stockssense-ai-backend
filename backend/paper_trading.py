@@ -375,7 +375,7 @@ def close_paper_position(
     # 🛡️ Hard ₹300 Loss Cap Guard: Ensure no loss EVER exceeds -₹300.00
     if pnl < -300.0:
         pnl = -300.0
-        exit_reason = "HARD_SL_CIRCUIT_BREAKER"
+        exit_reason = "HARD_SL_BREAKER"
         if action == "BUY":
             exit_price = round(entry_price - (300.0 / quantity), 2)
             pnl_pct = round(((exit_price - entry_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
@@ -383,7 +383,7 @@ def close_paper_position(
             exit_price = round(entry_price + (300.0 / quantity), 2)
             pnl_pct = round(((entry_price - exit_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
     elif pnl <= -295.0 and exit_reason in ("MANUAL", "SL_HIT"):
-        exit_reason = "HARD_SL_CIRCUIT_BREAKER"
+        exit_reason = "HARD_SL_BREAKER"
 
     # Save to DB
     trade.exit_price  = exit_price
@@ -498,7 +498,7 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
         current_pnl = (price - entry_p) * qty if action == "BUY" else (entry_p - price) * qty
         is_sl_breached = (action == "BUY" and price <= sl_p) or (action == "SELL" and price >= sl_p) if sl_p > 0 else False
         if current_pnl <= -290.0 or is_sl_breached:
-            res = close_paper_position(db, symbol, price, exit_reason="HARD_SL_CIRCUIT_BREAKER" if current_pnl <= -290.0 else "SL_HIT")
+            res = close_paper_position(db, symbol, price, exit_reason="HARD_SL_BREAKER" if current_pnl <= -290.0 else "SL_HIT")
             results.append(res)
             _peak_prices.pop(trade_id, None)
             _peak_pnl.pop(trade_id, None)

@@ -56,7 +56,7 @@ class PaperTrade(Base):
     stop_loss      = Column(Float)
     target1        = Column(Float)
     target2        = Column(Float)
-    status         = Column(String(20), default="OPEN")  # OPEN / CLOSED / SL_HIT / T1_HIT / T2_HIT
+    status         = Column(String(50), default="OPEN")  # OPEN / CLOSED / SL_HIT / T1_HIT / T2_HIT
     pnl            = Column(Float, default=0.0)
     pnl_percent    = Column(Float, default=0.0)
     opened_at      = Column(DateTime, default=datetime.utcnow)
@@ -77,7 +77,7 @@ class LiveTrade(Base):
     stop_loss      = Column(Float)
     target1        = Column(Float)
     target2        = Column(Float)
-    status         = Column(String(20), default="OPEN")  # OPEN / CLOSED / SL_HIT / T1_HIT / T2_HIT
+    status         = Column(String(50), default="OPEN")  # OPEN / CLOSED / SL_HIT / T1_HIT / T2_HIT
     order_id       = Column(String(50), nullable=True)   # Angel One order ID
     pnl            = Column(Float, default=0.0)
     pnl_percent    = Column(Float, default=0.0)

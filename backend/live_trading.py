@@ -270,7 +270,7 @@ def close_live_position(
         pnl_pct = round(((entry_price - exit_price) / entry_price) * 100, 2) if entry_price > 0 else 0.0
 
     if pnl <= -295.0 and exit_reason in ("MANUAL", "SL_HIT"):
-        exit_reason = "HARD_SL_CIRCUIT_BREAKER"
+        exit_reason = "HARD_SL_BREAKER"
 
     # Save to DB
     trade.exit_price  = exit_price
@@ -351,7 +351,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
         # 🚨 Hard Rupee SL Circuit Breaker (Max ₹300 Loss Cap per live trade)
         current_pnl = (price - trade.entry_price) * trade.quantity if trade.action == "BUY" else (trade.entry_price - price) * trade.quantity
         if current_pnl <= -300.0:
-            res = close_live_position(db, symbol, price, exit_reason="HARD_SL_CIRCUIT_BREAKER")
+            res = close_live_position(db, symbol, price, exit_reason="HARD_SL_BREAKER")
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
             logger.info("🚨 Hard ₹300 SL Circuit Breaker triggered for LIVE trade %s (PnL: ₹%.2f). Squareoff executed.", symbol, current_pnl)

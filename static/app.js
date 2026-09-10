@@ -1335,9 +1335,9 @@ async function loadPortfolio() {
           let triggerExit = false;
           let exitReason = 'SL_HIT';
           
-          if (posPnl <= -300.0) {
+          if (posPnl <= -290.0) {
             triggerExit = true;
-            exitReason = 'HARD_SL_CIRCUIT_BREAKER';
+            exitReason = 'HARD_SL_BREAKER';
           } else if (p.action === 'BUY' && cmp <= (p.stop_loss || 0)) {
             triggerExit = true;
             exitReason = 'SL_HIT';
@@ -1492,9 +1492,9 @@ async function loadTrades() {
       let displayStatus = t.status;
       let statusEmoji = '⚪';
       
-      if (t.status === 'HARD_SL_CIRCUIT_BREAKER' || (t.pnl && t.pnl <= -295)) {
+      if (t.status === 'HARD_SL_BREAKER' || t.status === 'HARD_SL_CIRCUIT_BREAKER' || (t.pnl && t.pnl <= -295)) {
         statusEmoji = '🔴';
-        displayStatus = 'HARD_SL_CIRCUIT_BREAKER';
+        displayStatus = 'HARD_SL_BREAKER';
       } else if (t.status === 'T2_HIT') {
         statusEmoji = '🎯🎯';
       } else if (t.status === 'T1_HIT') {
