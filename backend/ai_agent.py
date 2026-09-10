@@ -21,8 +21,8 @@ from pydantic import BaseModel, Field
 
 _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
 
-MODELS_TO_TRY = ["gemini-2.5-flash", "gemini-2.0-flash"]
-GEMINI_TIMEOUT = 3  # seconds per model attempt
+MODELS_TO_TRY = ["gemini-3.6-flash"]
+GEMINI_TIMEOUT = 8  # seconds per model attempt
 
 # Circuit breaker: if 429 rate limit is hit, skip Gemini API calls for 10 minutes
 _gemini_blocked_until = 0.0
@@ -134,7 +134,7 @@ INSTRUCTIONS:
                         contents=SYSTEM_PROMPT + "\n\n" + prompt,
                         config=types.GenerateContentConfig(
                             temperature=0.2,
-                            max_output_tokens=1024,
+                            max_output_tokens=2048,
                             response_mime_type="application/json",
                             response_schema=StockSignalSchema,
                         )

@@ -464,6 +464,8 @@ def get_live_portfolio_summary(db: Session) -> dict:
             "target1":      t.target1,
             "target2":      t.target2,
             "status":       "OPEN",
+            "pnl":          round(t.pnl or 0.0, 2),
+            "pnl_percent":  round(t.pnl_percent or 0.0, 2),
             "opened_at":    str(t.opened_at),
         })
 
