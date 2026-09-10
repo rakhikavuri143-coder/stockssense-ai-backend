@@ -127,7 +127,14 @@ def _build_engine():
         if db_url.startswith("postgres://"):
             db_url = db_url.replace("postgres://", "postgresql://", 1)
         try:
-            engine = create_engine(db_url, pool_pre_ping=True, pool_recycle=1800)
+            engine = create_engine(
+                db_url,
+                pool_size=5,
+                max_overflow=5,
+                pool_timeout=10,
+                pool_pre_ping=True,
+                pool_recycle=1800
+            )
             with engine.connect():
                 pass
             logger.info("✅ Connected to database using DATABASE_URL")

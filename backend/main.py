@@ -273,14 +273,13 @@ async def weekly_quant_audit_job():
         db.close()
 
 async def self_keepalive_job():
-    """Keep Render container awake during active hours by self-pinging local health endpoint."""
+    """Keep Render container awake during active hours by self-pinging local health endpoint asynchronously."""
     try:
-        import urllib.request
+        import httpx
         port = int(os.getenv("PORT", "8000"))
         url = f"http://127.0.0.1:{port}/health"
-        req = urllib.request.Request(url, headers={"User-Agent": "StocksSense-KeepAlive/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            pass
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.get(url)
     except Exception:
         pass
 
@@ -289,9 +288,9 @@ async def lifespan(app: FastAPI):
     init_db()
     init_user_db()
     logger.info("✅ User database (Google Login / Trial tracking) initialized.")
-    # Auto-check open paper positions against live prices every 5 seconds
-    scheduler.add_job(auto_exit_monitor_job, "interval", seconds=5, id="auto_exit_monitor", misfire_grace_time=30, max_instances=2, coalesce=True)
-    # Keep Render container awake (ping every 10 minutes)
+    # Auto-check open paper & live positions against live prices every 15 seconds (prevents CPU/RAM overload)
+    scheduler.add_job(auto_exit_monitor_job, "interval", seconds=15, id="auto_exit_monitor", misfire_grace_time=30, max_instances=1, coalesce=True)
+    # Keep Render container awake (ping every 10 minutes non-blocking)
     scheduler.add_job(self_keepalive_job, "interval", minutes=10, id="self_keepalive")
     # 9:15 AM IST = 3:45 AM UTC (market open auto-scan)
     scheduler.add_job(market_open_scan_job, "cron", hour=3, minute=45, id="market_open_scan")
