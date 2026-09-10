@@ -1259,6 +1259,16 @@ async def get_live_broker_status():
             "message": f"Missing environment keys: {missing}" if missing else f"Angel One Error: {err_msg}"
         }
 
+@app.post("/api/live/refresh-session")
+async def refresh_live_session():
+    """Force clear cached Angel One JWT and re-login fresh (fixes token expired issues)."""
+    from backend import live_trading
+    live_trading.reset_live_session()
+    auth_data, err_msg = live_trading.get_live_auth_data(return_error=True, force_refresh=True)
+    if auth_data:
+        return {"status": "refreshed", "message": "✅ Angel One session refreshed!", "client_code": auth_data.get("client_code")}
+    return {"status": "error", "message": f"❌ Re-login failed: {err_msg}"}
+
 @app.get("/api/debug/server-ip")
 async def debug_server_ip():
     """Check actual outbound public IP of this server & proxy (for Angel One IP registration)."""

@@ -26,10 +26,18 @@ _smartapi_session = None
 _smartapi_session = None
 _last_auth_error = ""
 
-def get_live_auth_data(return_error: bool = False):
+def reset_live_session():
+    """Force clear the cached Angel One session so next call will re-login fresh."""
+    global _smartapi_session, _last_auth_error
+    _smartapi_session = None
+    _last_auth_error = ""
+    logger.info("🔄 Angel One session cache cleared — will re-login on next request.")
+
+
+def get_live_auth_data(return_error: bool = False, force_refresh: bool = False):
     """Retrieve or initialize active Angel One SmartAPI authenticated session."""
     global _smartapi_session, _last_auth_error
-    if _smartapi_session:
+    if _smartapi_session and not force_refresh:
         return (_smartapi_session, "") if return_error else _smartapi_session
 
     client_code = os.getenv("ANGELONE_CLIENT_CODE")
@@ -63,9 +71,11 @@ def get_live_auth_data(return_error: bool = False):
             _last_auth_error = ""
             return (_smartapi_session, "") if return_error else _smartapi_session
         else:
+            _smartapi_session = None
             _last_auth_error = err or "SmartAPI Authentication failed"
             return (None, _last_auth_error) if return_error else None
     except Exception as e:
+        _smartapi_session = None
         _last_auth_error = str(e)
         logger.error("Failed to authenticate with Angel One SmartAPI: %s", e)
         return (None, _last_auth_error) if return_error else None
@@ -158,24 +168,46 @@ def place_live_order(
 
     if not order_res.get("success"):
         err_msg = order_res.get('message', '')
-        resp = {
-            "success": False,
-            "message": f"❌ Angel One Execution Failed: {err_msg}"
-        }
-        if "registered IP" in err_msg.lower() or "not a registered ip" in err_msg.lower() or "ab1012" in err_msg.lower():
-            resp["browser_fallback"] = True
-            resp["jwtToken"] = auth_data.get("jwtToken")
-            resp["api_key"] = auth_data.get("api_key")
-            resp["trading_symbol"] = trading_symbol
-            resp["symbol_token"] = token
-            resp["action"] = action
-            resp["quantity"] = quantity
-            resp["price"] = entry_price
-            resp["stop_loss"] = stop_loss
-            resp["target1"] = target1
-            resp["target2"] = target2
-            resp["client_public_ip"] = get_server_public_ip()
-        return resp
+        err_lower = err_msg.lower()
+
+        # 🔄 Auto-retry once with fresh token if JWT expired or unauthorized
+        TOKEN_EXPIRED_SIGNALS = ("invalid token", "token expired", "unauthorized", "ab2000", "ab1006", "session expired", "not logged in", "invalid session")
+        if any(sig in err_lower for sig in TOKEN_EXPIRED_SIGNALS):
+            logger.warning("🔄 JWT token expired/invalid — clearing session cache and retrying with fresh login...")
+            reset_live_session()
+            auth_data = get_live_auth_data(force_refresh=True)
+            if auth_data:
+                order_res = place_smartapi_order(
+                    auth_data=auth_data,
+                    symbol=trading_symbol,
+                    symbol_token=token,
+                    transaction_type=action,
+                    quantity=quantity,
+                    price=entry_price,
+                    order_type="MARKET"
+                )
+                err_msg = order_res.get('message', '')
+                err_lower = err_msg.lower()
+
+        if not order_res.get("success"):
+            resp = {
+                "success": False,
+                "message": f"❌ Angel One Execution Failed: {err_msg}"
+            }
+            if "registered ip" in err_lower or "not a registered ip" in err_lower or "ab1012" in err_lower:
+                resp["browser_fallback"] = True
+                resp["jwtToken"] = auth_data.get("jwtToken") if auth_data else ""
+                resp["api_key"] = auth_data.get("api_key") if auth_data else ""
+                resp["trading_symbol"] = trading_symbol
+                resp["symbol_token"] = token
+                resp["action"] = action
+                resp["quantity"] = quantity
+                resp["price"] = entry_price
+                resp["stop_loss"] = stop_loss
+                resp["target1"] = target1
+                resp["target2"] = target2
+                resp["client_public_ip"] = get_server_public_ip()
+            return resp
 
     order_id = order_res.get("order_id")
 

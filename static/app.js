@@ -1024,7 +1024,14 @@ async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
           is_scalp: isScalp
         })
       });
-      showToast(`⚡ LIVE ${data.action}: ${data.quantity} x ${symbol.replace('.NS','')} @ ₹${data.price.toFixed(2)}`, data.action.toLowerCase());
+      showOrderConfirmation({
+        mode: 'LIVE',
+        action: data.action,
+        qty: data.quantity,
+        symbol: symbol.replace('.NS',''),
+        price: data.price,
+        orderId: orderId
+      });
       if (alertsEnabled) playAlertSound();
       closeManualTradeModal();
       closeQuickOrderModal();
@@ -1041,6 +1048,73 @@ async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
     showMtError('Direct order network error: ' + directErr.message);
     showQoError('Direct order network error: ' + directErr.message);
     return false;
+  }
+}
+
+function showOrderConfirmation({ mode, action, qty, symbol, price, orderId }) {
+  // Remove any existing confirmation
+  const existing = document.getElementById('order-confirm-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'order-confirm-overlay';
+  overlay.style.cssText = `
+    position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;
+    background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;
+  `;
+
+  const isLive = mode === 'LIVE';
+  const isBuy  = action === 'BUY';
+  const color  = isBuy ? '#00d085' : '#ff4d6d';
+  const emoji  = isLive ? '⚡' : '✅';
+  const modeLabel = isLive ? '🔴 LIVE MONEY TRADE' : '📝 PAPER TRADE';
+
+  overlay.innerHTML = `
+    <div style="
+      background:linear-gradient(135deg,#1a2236,#0e1623);
+      border:2px solid ${color};
+      border-radius:18px;padding:2rem 2.5rem;text-align:center;
+      min-width:300px;max-width:420px;box-shadow:0 8px 40px rgba(0,0,0,0.5);
+    ">
+      <div style="font-size:2.5rem;margin-bottom:0.4rem">${emoji}</div>
+      <div style="color:${color};font-size:1.1rem;font-weight:700;letter-spacing:1px;margin-bottom:0.2rem">${modeLabel}</div>
+      <div style="font-size:1.7rem;font-weight:800;color:#fff;margin:0.6rem 0">${action} — ${symbol}</div>
+      <div style="color:#b0c4de;font-size:1rem;margin-bottom:0.4rem">
+        ${qty} shares @ ₹${typeof price === 'number' ? price.toFixed(2) : price} (MARKET)
+      </div>
+      ${orderId ? `<div style="background:rgba(255,255,255,0.07);border-radius:8px;padding:0.4rem 0.8rem;font-size:0.82rem;color:#7a8ba8;margin:0.6rem 0">
+        Order ID: <b style="color:#fff">${orderId}</b>
+      </div>` : ''}
+      <div style="color:#00d085;font-size:0.88rem;margin:0.8rem 0 1.2rem">
+        ✅ Order Successfully Placed & Confirmed!<br>Open Positions tab will update shortly.
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button onclick="document.getElementById('order-confirm-overlay').remove()" style="
+          background:linear-gradient(135deg,${color},${isBuy?'#00a86b':'#c0392b'});
+          color:#fff;border:none;border-radius:10px;padding:0.7rem 1.5rem;
+          font-size:1rem;font-weight:700;cursor:pointer;flex:1;
+        ">✔ Got it!</button>
+        ${isLive ? `<button onclick="refreshAngelOneSession()" style="
+          background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);
+          border-radius:10px;padding:0.7rem 1.5rem;font-size:1rem;cursor:pointer;
+        ">🔄 Refresh Session</button>` : ''}
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+  // Auto-dismiss after 8 seconds
+  setTimeout(() => { if (document.getElementById('order-confirm-overlay')) overlay.remove(); }, 8000);
+}
+
+async function refreshAngelOneSession() {
+  showToast('🔄 Refreshing Angel One session…', '');
+  try {
+    const res = await fetch('/api/live/refresh-session', { method: 'POST', headers: authHeaders() });
+    const data = await res.json();
+    showToast(data.message || '✅ Session refreshed!', data.status === 'refreshed' ? 'buy' : 'sell');
+  } catch (e) {
+    showToast('❌ Session refresh failed: ' + e.message, 'sell');
   }
 }
 
@@ -1091,8 +1165,14 @@ async function submitQuickOrder() {
     });
     const data = await res.json();
     if (data.success) {
-      const modePrefix = currentMode === 'live' ? '⚡ LIVE' : '✅ Paper';
-      showToast(`${modePrefix} ${action}: ${qty} shares x ${symbol.replace('.NS','')} @ ₹${price.toFixed(2)}`, action.toLowerCase());
+      showOrderConfirmation({
+        mode: currentMode === 'live' ? 'LIVE' : 'PAPER',
+        action,
+        qty,
+        symbol: symbol.replace('.NS',''),
+        price,
+        orderId: data.order_id || null
+      });
       if (alertsEnabled) playAlertSound();
       closeQuickOrderModal();
       switchTab('paper');
@@ -1917,8 +1997,14 @@ async function submitManualTrade() {
     });
     const data = await res.json();
     if (data.success) {
-      const modePrefix = currentMode === 'live' ? '⚡ LIVE' : 'Manual';
-      showToast(`${modePrefix} ${action}: ${qty} x ${_mtSymbol.replace('.NS','')} @ Rs.${price.toFixed(2)}`, action.toLowerCase());
+      showOrderConfirmation({
+        mode: currentMode === 'live' ? 'LIVE' : 'PAPER',
+        action,
+        qty,
+        symbol: _mtSymbol.replace('.NS',''),
+        price,
+        orderId: data.order_id || null
+      });
       if (alertsEnabled) playAlertSound();
       closeManualTradeModal();
       loadPortfolio();
