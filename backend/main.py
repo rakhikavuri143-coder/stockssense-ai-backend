@@ -1098,8 +1098,12 @@ class ClosePositionRequest(BaseModel):
 
 @app.post("/api/paper/close")
 async def close_paper(req: ClosePositionRequest, db: Session = Depends(get_db), user_email: str = Depends(require_authenticated_user)):
-    result = paper_trading.close_paper_position(db, req.symbol, req.exit_price, req.exit_reason)
-    return result
+    try:
+        result = paper_trading.close_paper_position(db, req.symbol, req.exit_price, req.exit_reason)
+        return result
+    except Exception as e:
+        logger.error("Error in close_paper: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Close paper error: {e}")
 
 @app.get("/api/paper/portfolio")
 async def get_portfolio(db: Session = Depends(get_db)):
