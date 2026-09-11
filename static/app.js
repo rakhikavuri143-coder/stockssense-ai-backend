@@ -873,7 +873,7 @@ async function quickPaperSell(btn, signalId, symbol, name, price, sl, t1, t2, is
 }
 
 function openQuickOrderModal(signalId, symbol, name, action, price, sl, t1, t2, isScalp = false) {
-  const sym = (symbol || '').replace('.NS', '');
+  const sym = (symbol || '').replace('.NS', '').replace('.BO', '').replace('-EQ', '').trim();
   _qoPrice = price || 0;
   _qoSl = sl || 0;
   _qoIsScalp = isScalp;
@@ -1120,7 +1120,8 @@ async function refreshAngelOneSession() {
 
 async function submitQuickOrder() {
   const symEl = document.getElementById('qo_symbol');
-  const symbol = (symEl ? symEl.textContent : '') + '.NS';
+  const cleanBase = (symEl ? symEl.textContent : '').replace('.NS', '').replace('.BO', '').replace('-EQ', '').trim();
+  const symbol = cleanBase + '.NS';
   const nameEl = document.getElementById('qo_name');
   const name = nameEl ? nameEl.textContent : '';
   const actEl = document.getElementById('qo_action');
@@ -2001,13 +2002,15 @@ async function submitManualTrade() {
   const mtTimeoutId = setTimeout(() => mtController.abort(), 20000);
 
   try {
+    const cleanBase = (_mtSymbol || '').replace('.NS', '').replace('.BO', '').replace('-EQ', '').trim();
+    const cleanSymbol = cleanBase + '.NS';
     const endpoint = currentMode === 'live' ? '/api/live/buy-sell' : '/api/paper/manual-order';
     const res  = await fetch(endpoint, {
       method: 'POST',
       headers: authHeaders(),
       signal: mtController.signal,
       body: JSON.stringify({
-        symbol: _mtSymbol, action,
+        symbol: cleanSymbol, action,
         entry_price: price, quantity: qty,
         stop_loss: sl, target1: t1, target2: t2,
       }),

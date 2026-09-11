@@ -569,22 +569,24 @@ def fetch_and_cache_tokens() -> dict:
 
 def get_angelone_token_and_symbol(yahoo_symbol: str) -> tuple[Optional[str], Optional[str]]:
     """
-    Given a Yahoo Finance symbol like 'IDFCFIRSTB.NS' or 'RELIANCE', return (token, tradingsymbol) for Angel One.
-    e.g., 'IDFCFIRSTB.NS' -> ('11184', 'IDFCFIRSTB-EQ')
+    Given a Yahoo Finance symbol like 'ONGC-EQ', 'ONGC.NS', 'ONGC-EQ.NS' or 'RELIANCE', return (token, tradingsymbol) for Angel One.
+    e.g., 'ONGC-EQ' -> ('2475', 'ONGC-EQ')
     """
-    base = yahoo_symbol.upper().replace(".NS", "").replace(".BO", "").strip()
+    if not yahoo_symbol:
+        return None, None
+    raw = yahoo_symbol.upper().replace(".NS", "").replace(".BO", "").strip()
+    base = raw.replace("-EQ", "").replace("-BE", "").replace("-SM", "").strip()
     
     # 1. Check static high-speed map (instant 0ms lookup)
     if base in STATIC_SCRIP_TOKENS:
         return STATIC_SCRIP_TOKENS[base]["token"], STATIC_SCRIP_TOKENS[base]["trading_symbol"]
+    if raw in STATIC_SCRIP_TOKENS:
+        return STATIC_SCRIP_TOKENS[raw]["token"], STATIC_SCRIP_TOKENS[raw]["trading_symbol"]
     
     # 2. Check dynamic cache
     if base in _token_map_cache:
         return _token_map_cache[base]["token"], _token_map_cache[base]["trading_symbol"]
-    
-    # 3. Fallback to online download if unknown stock
-    cache = fetch_and_cache_tokens()
-    if base in cache:
-        return cache[base]["token"], cache[base]["trading_symbol"]
+    if raw in _token_map_cache:
+        return _token_map_cache[raw]["token"], _token_map_cache[raw]["trading_symbol"]
         
     return None, None
