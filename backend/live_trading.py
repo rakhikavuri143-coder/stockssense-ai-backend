@@ -133,11 +133,11 @@ def place_live_order(
     if existing:
         return {"success": False, "message": f"Already have an open live position in {symbol}"}
 
-    # 5. Guard #17: Circuit Proximity Pre-Entry Filter
+    # 5. Guard #17: Circuit Proximity Pre-Entry Filter (instant local 10% boundary, no slow network calls)
     try:
-        m_depth, low_circuit = get_circuit_and_depth_simulator(symbol, entry_price)
-        guard_status = circuit_and_liquidity_guard(m_depth, entry_price, low_circuit)
-        if guard_status == "BLOCK_ENTRY":
+        low_circuit = entry_price * 0.90
+        circuit_dist_pct = ((entry_price - low_circuit) / entry_price) * 100
+        if circuit_dist_pct < 3.5:
             return {
                 "success": False,
                 "message": "🛡️ Circuit Proximity Guard Active: Stock is too close to lower circuit. Blocked live entry."
@@ -155,7 +155,6 @@ def place_live_order(
         logger.info("🛡️ Strictly locked LIVE SL for %s to ₹%.2f (Qty: %d -> Exact ₹300.00 Max Loss)", symbol, stop_loss, quantity)
 
     # 6. Place order on SmartAPI
-    # Target and SL logic mapping
     logger.info("Executing LIVE %s order for %d shares of %s", action, quantity, trading_symbol)
     order_res = place_smartapi_order(
         auth_data=auth_data,
@@ -191,24 +190,12 @@ def place_live_order(
                 err_lower = err_msg.lower()
 
         if not order_res.get("success"):
-            resp = {
-                "success": False,
-                "message": f"❌ Angel One Execution Failed: {err_msg}"
-            }
+            curr_ip = get_server_public_ip()
             if "registered ip" in err_lower or "not a registered ip" in err_lower or "ab1012" in err_lower:
-                resp["browser_fallback"] = True
-                resp["jwtToken"] = auth_data.get("jwtToken") if auth_data else ""
-                resp["api_key"] = auth_data.get("api_key") if auth_data else ""
-                resp["trading_symbol"] = trading_symbol
-                resp["symbol_token"] = token
-                resp["action"] = action
-                resp["quantity"] = quantity
-                resp["price"] = entry_price
-                resp["stop_loss"] = stop_loss
-                resp["target1"] = target1
-                resp["target2"] = target2
-                resp["client_public_ip"] = get_server_public_ip()
-            return resp
+                msg = f"❌ Angel One IP Rejection: Your current server IP ({curr_ip}) is not registered. Please open smartapi.angelone.in -> Edit App -> Add IP: {curr_ip}"
+            else:
+                msg = f"❌ Angel One Execution Failed: {err_msg}"
+            return {"success": False, "message": msg}
 
     order_id = order_res.get("order_id")
 

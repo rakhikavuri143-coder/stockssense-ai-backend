@@ -43,11 +43,20 @@ def get_server_public_ip() -> str:
         return _SERVER_PUBLIC_IP
     
     env_ip = os.getenv("ANGELONE_CLIENT_PUBLIC_IP")
-    if env_ip:
+    if env_ip and env_ip.strip():
         _SERVER_PUBLIC_IP = env_ip.strip()
         return _SERVER_PUBLIC_IP
 
-    _SERVER_PUBLIC_IP = "216.24.57.252"
+    # Try dynamic resolution from ipify
+    try:
+        import urllib.request, json
+        with urllib.request.urlopen("https://api.ipify.org?format=json", timeout=3.0) as r:
+            _SERVER_PUBLIC_IP = json.loads(r.read().decode())["ip"].strip()
+            return _SERVER_PUBLIC_IP
+    except Exception:
+        pass
+
+    _SERVER_PUBLIC_IP = "157.50.100.194"
     return _SERVER_PUBLIC_IP
 
 
