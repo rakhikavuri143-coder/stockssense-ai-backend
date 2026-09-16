@@ -132,7 +132,7 @@ def reset_paper_account(db: Session):
 
 
 def is_market_open_for_trading() -> tuple[bool, str]:
-    """Check if Indian Stock Market (NSE) is currently open for trading (09:15 AM to 03:30 PM IST, Mon-Fri)."""
+    """Check if Indian Stock Market (NSE) is currently open for new trade entries (09:15 AM to 03:00 PM IST, Mon-Fri)."""
     if os.getenv("ALLOW_OFFMARKET_PAPER_TRADING", "false").lower() == "true":
         return True, "Off-market paper trading override enabled"
 
@@ -144,8 +144,8 @@ def is_market_open_for_trading() -> tuple[bool, str]:
         return False, "Market is closed on weekends! Trading hours are Monday-Friday, 9:15 AM - 3:30 PM IST."
 
     t = now_ist.time()
-    if t < time(9, 15) or t > time(15, 30):
-        return False, f"Market is currently closed! Trading hours are 9:15 AM - 3:30 PM IST (Current time: {t.strftime('%H:%M:%S')} IST)."
+    if t < time(9, 15) or t > time(15, 0):
+        return False, f"🚫 New intraday trade entries are blocked after 3:00 PM IST! (Current time: {t.strftime('%H:%M:%S')} IST). Market enters EOD square-off mode."
 
     return True, "Market is OPEN"
 
