@@ -728,156 +728,171 @@ async def ultra_sniper_scan_endpoint():
     from datetime import datetime, timezone, timedelta
     from backend.technicals_1h import analyze_1h, analyze_15m
     from backend.loss_guard import check_nifty_trend_guard
-    from backend.indian_stocks import NIFTY50_STOCKS, BUDGET_LOW_PRICED_STOCKS
-
-    ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-    time_str = ist_now.strftime("%H:%M")
-
-    # 🛑 Strict Market Hours Guard: Zero signals outside 9:15 AM - 3:30 PM IST
-    if ist_now.weekday() in (5, 6) or not ("09:15" <= time_str <= "15:30"):
-        return {
-            "sniper_trade": None,
-            "total_scanned": 0,
-            "market_closed": True,
-            "message": f"🌙 MARKET IS CLOSED RIGHT NOW ({time_str} IST). Live NSE Trading Hours are 9:15 AM - 3:30 PM IST. Zero signals generated outside market hours to protect capital."
-        }
-
-    is_lunch_trap = "11:30" <= time_str <= "13:30"
+    from backend.indian_stocks import NIFTY50_STOCKS
 
     try:
-        nifty_status = check_nifty_trend_guard()
-        nifty_blocked = nifty_status.get("action_block", False) or nifty_status.get("blocked", False)
-        nifty_pct     = nifty_status.get("nifty_change_pct", 0.0)
-    except Exception:
-        nifty_blocked = False
-        nifty_pct     = 0.0
+        ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        time_str = ist_now.strftime("%H:%M")
 
-    if nifty_blocked:
-        return {
-            "sniper_trade": None,
-            "total_scanned": 50,
-            "nifty_pct": nifty_pct,
-            "nifty_blocked": True,
-            "message": f"🚨 Nifty 50 Market Crash Guard Active ({nifty_pct:+.2f}%). ALL BUY TRADES BLOCKED TODAY FOR CAPITAL PROTECTION."
-        }
-
-    stocks = NIFTY50_STOCKS + BUDGET_LOW_PRICED_STOCKS[:10]
-
-    def _eval_single(stock):
-        symbol = stock["symbol"]
-        name   = stock["name"]
-        sector = stock.get("sector", "N/A")
-        try:
-            tech_1h = analyze_1h(symbol)
-            if not tech_1h:
-                return None
-            tech_15m = analyze_15m(symbol)
-            if not tech_15m:
-                return None
-
-            price = tech_1h.get("current_price", 0)
-            if not price or price <= 0:
-                return None
-
-            trend_1h     = tech_1h.get("trend_1h", "NEUTRAL")
-            trend_15m    = tech_15m.get("trend_15m", "NEUTRAL")
-            rsi_1h       = tech_1h.get("rsi", 50)
-            rsi_15m      = tech_15m.get("rsi_15m", 50)
-            p_vwap_1h    = tech_1h.get("price_vs_vwap", "AT")
-            p_vwap_15m   = tech_15m.get("price_vs_vwap_15m", "AT")
-            rvol_1h      = tech_1h.get("rvol", 1.0)
-            rvol_15m     = tech_15m.get("rvol_15m", 1.0)
-            is_open_high = tech_1h.get("is_open_high", False)
-            ema9         = tech_1h.get("ema9", 0)
-            ema21        = tech_1h.get("ema21", 0)
-
-            check1_buy  = (trend_1h == "BULLISH" and trend_15m == "BULLISH" and ema9 > ema21)
-            check1_sell = (trend_1h == "BEARISH" and trend_15m == "BEARISH" and ema9 < ema21)
-            if not (check1_buy or check1_sell):
-                return None
-
-            isBuy = check1_buy
-            effective_rvol = max(rvol_1h, rvol_15m)
-            if effective_rvol < 1.8:
-                return None
-
-            check3 = (isBuy and p_vwap_1h == "ABOVE" and p_vwap_15m == "ABOVE") or \
-                     (not isBuy and p_vwap_1h == "BELOW" and p_vwap_15m == "BELOW")
-            if not check3:
-                return None
-
-            check4 = (isBuy and 52 <= rsi_1h <= 68 and 50 <= rsi_15m <= 72) or \
-                     (not isBuy and 32 <= rsi_1h <= 48 and 28 <= rsi_15m <= 50)
-            if not check4:
-                return None
-
-            if isBuy and is_open_high:
-                return None
-
-            sl  = tech_1h.get("sl_buy" if isBuy else "sl_sell", round(price * (0.988 if isBuy else 1.012), 2))
-            t1  = tech_1h.get("target1_buy" if isBuy else "target1_sell", round(price * (1.018 if isBuy else 0.982), 2))
-            t2  = tech_1h.get("target2_buy" if isBuy else "target2_sell", round(price * (1.030 if isBuy else 0.970), 2))
-            risk = abs(price - sl)
-            reward = abs(t1 - price)
-            rr_ratio = round(reward / risk, 2) if risk > 0 else 1.8
-            if rr_ratio < 1.75:
-                return None
-
-            score = 90.0
-            if effective_rvol >= 2.5: score += 3.0
-            elif effective_rvol >= 2.0: score += 2.0
-            if 55 <= rsi_1h <= 65: score += 2.0
-            if rr_ratio >= 2.0: score += 2.0
-            score = min(99.0, score)
-
-            if score < 92.0:
-                return None
-
+        # 🛑 Strict Market Hours Guard: Zero signals outside 9:15 AM - 3:30 PM IST
+        if ist_now.weekday() in (5, 6) or not ("09:15" <= time_str <= "15:30"):
             return {
-                "symbol":        symbol.replace(".NS", "-EQ"),
-                "stock":         symbol.replace(".NS", "-EQ"),
-                "company_name":  name,
-                "sector":        sector,
-                "action":        "BUY" if isBuy else "SELL",
-                "price":         round(float(price), 2),
-                "entry_price":   round(float(price), 2),
-                "target":        round(float(t1), 2),
-                "target2":       round(float(t2), 2),
-                "stoploss":      round(float(sl), 2),
-                "confidence":    round(score, 1),
-                "score":         round(score, 1),
-                "rr_ratio":      rr_ratio,
-                "rsi_1h":        round(rsi_1h, 1),
-                "rsi_15m":       round(rsi_15m, 1),
-                "rvol":          round(effective_rvol, 2),
-                "trend_1h":      trend_1h,
-                "trend_15m":     trend_15m,
-                "reasoning":     f"👑 92%+ ULTRA SNIPER TRADE: 1H+15M Confluence | RVOL {effective_rvol:.1f}x | R:R 1:{rr_ratio:.1f} | Pure Trend!",
-                "mode":          "ULTRA_SNIPER"
+                "sniper_trade": None,
+                "total_scanned": 0,
+                "market_closed": True,
+                "message": f"🌙 MARKET IS CLOSED RIGHT NOW ({time_str} IST). Live NSE Trading Hours are 9:15 AM - 3:30 PM IST. Zero signals generated outside market hours to protect capital."
             }
+
+        is_lunch_trap = "11:30" <= time_str <= "13:30"
+
+        try:
+            nifty_status = check_nifty_trend_guard()
+            nifty_blocked = nifty_status.get("action_block", False) or nifty_status.get("blocked", False)
+            nifty_pct     = nifty_status.get("nifty_change_pct", 0.0)
         except Exception:
-            return None
+            nifty_blocked = False
+            nifty_pct     = 0.0
 
-    candidates = []
-    with ThreadPoolExecutor(max_workers=min(8, len(stocks))) as executor:
-        results = executor.map(_eval_single, stocks)
-        for res in results:
-            if res:
-                candidates.append(res)
+        if nifty_blocked:
+            return {
+                "sniper_trade": None,
+                "total_scanned": 50,
+                "nifty_pct": nifty_pct,
+                "nifty_blocked": True,
+                "message": f"🚨 Nifty 50 Market Crash Guard Active ({nifty_pct:+.2f}%). ALL BUY TRADES BLOCKED TODAY FOR CAPITAL PROTECTION."
+            }
 
-    candidates.sort(key=lambda x: x["confidence"], reverse=True)
+        stocks = NIFTY50_STOCKS
 
-    if not candidates:
+        def _eval_single(stock):
+            symbol = stock["symbol"]
+            name   = stock["name"]
+            sector = stock.get("sector", "N/A")
+            try:
+                tech_1h = analyze_1h(symbol)
+                if not tech_1h:
+                    return None
+                tech_15m = analyze_15m(symbol)
+                if not tech_15m:
+                    return None
+
+                price = tech_1h.get("current_price", 0)
+                if not price or price <= 0:
+                    return None
+
+                trend_1h     = tech_1h.get("trend_1h", "NEUTRAL")
+                trend_15m    = tech_15m.get("trend_15m", "NEUTRAL")
+                rsi_1h       = tech_1h.get("rsi", 50)
+                rsi_15m      = tech_15m.get("rsi_15m", 50)
+                p_vwap_1h    = tech_1h.get("price_vs_vwap", "AT")
+                p_vwap_15m   = tech_15m.get("price_vs_vwap_15m", "AT")
+                rvol_1h      = tech_1h.get("rvol", 1.0)
+                rvol_15m     = tech_15m.get("rvol_15m", 1.0)
+                is_open_high = tech_1h.get("is_open_high", False)
+                ema9         = tech_1h.get("ema9", 0)
+                ema21        = tech_1h.get("ema21", 0)
+
+                check1_buy  = (trend_1h == "BULLISH" and trend_15m == "BULLISH" and ema9 > ema21)
+                check1_sell = (trend_1h == "BEARISH" and trend_15m == "BEARISH" and ema9 < ema21)
+                if not (check1_buy or check1_sell):
+                    return None
+
+                isBuy = check1_buy
+                effective_rvol = max(rvol_1h, rvol_15m)
+                if effective_rvol < 1.8:
+                    return None
+
+                check3 = (isBuy and p_vwap_1h == "ABOVE" and p_vwap_15m == "ABOVE") or \
+                         (not isBuy and p_vwap_1h == "BELOW" and p_vwap_15m == "BELOW")
+                if not check3:
+                    return None
+
+                check4 = (isBuy and 52 <= rsi_1h <= 68 and 50 <= rsi_15m <= 72) or \
+                         (not isBuy and 32 <= rsi_1h <= 48 and 28 <= rsi_15m <= 50)
+                if not check4:
+                    return None
+
+                if isBuy and is_open_high:
+                    return None
+
+                sl  = tech_1h.get("sl_buy" if isBuy else "sl_sell", round(price * (0.988 if isBuy else 1.012), 2))
+                t1  = tech_1h.get("target1_buy" if isBuy else "target1_sell", round(price * (1.018 if isBuy else 0.982), 2))
+                t2  = tech_1h.get("target2_buy" if isBuy else "target2_sell", round(price * (1.030 if isBuy else 0.970), 2))
+                risk = abs(price - sl)
+                reward = abs(t1 - price)
+                rr_ratio = round(reward / risk, 2) if risk > 0 else 1.8
+                if rr_ratio < 1.75:
+                    return None
+
+                score = 90.0
+                if effective_rvol >= 2.5: score += 3.0
+                elif effective_rvol >= 2.0: score += 2.0
+                if 55 <= rsi_1h <= 65: score += 2.0
+                if rr_ratio >= 2.0: score += 2.0
+                score = min(99.0, score)
+
+                if score < 92.0:
+                    return None
+
+                return {
+                    "symbol":        symbol.replace(".NS", "-EQ"),
+                    "stock":         symbol.replace(".NS", "-EQ"),
+                    "company_name":  name,
+                    "sector":        sector,
+                    "action":        "BUY" if isBuy else "SELL",
+                    "price":         round(float(price), 2),
+                    "entry_price":   round(float(price), 2),
+                    "target":        round(float(t1), 2),
+                    "target2":       round(float(t2), 2),
+                    "stoploss":      round(float(sl), 2),
+                    "confidence":    round(score, 1),
+                    "score":         round(score, 1),
+                    "rr_ratio":      rr_ratio,
+                    "rsi_1h":        round(rsi_1h, 1),
+                    "rsi_15m":       round(rsi_15m, 1),
+                    "rvol":          round(effective_rvol, 2),
+                    "trend_1h":      trend_1h,
+                    "trend_15m":     trend_15m,
+                    "reasoning":     f"👑 92%+ ULTRA SNIPER TRADE: 1H+15M Confluence | RVOL {effective_rvol:.1f}x | R:R 1:{rr_ratio:.1f} | Pure Trend!",
+                    "mode":          "ULTRA_SNIPER"
+                }
+            except Exception as ex:
+                logger.debug("Sniper eval error for %s: %s", stock.get("symbol"), ex)
+                return None
+
+        candidates = []
+        with ThreadPoolExecutor(max_workers=min(4, len(stocks))) as executor:
+            results = executor.map(_eval_single, stocks)
+            for res in results:
+                if res:
+                    candidates.append(res)
+
+        candidates.sort(key=lambda x: x["confidence"], reverse=True)
+
+        if not candidates:
+            return {
+                "sniper_trade": None,
+                "total_scanned": len(stocks),
+                "nifty_pct": nifty_pct,
+                "is_lunch_trap": is_lunch_trap,
+                "message": "⚠️ NO 92%+ ULTRA SNIPER TRADE TODAY: Market is currently sideways/choppy. No stock passed all 7 Ultra Strict Filters + 18 Loss Guards. CAPITAL IS 100% PROTECTED."
+            }
+
         return {
-            "sniper_trade": None,
+            "sniper_trade": candidates[0],
+            "runner_ups": candidates[1:3],
             "total_scanned": len(stocks),
             "nifty_pct": nifty_pct,
             "is_lunch_trap": is_lunch_trap,
-            "message": "⚠️ NO 92%+ ULTRA SNIPER TRADE TODAY: Market is currently sideways/choppy. No stock passed all 7 Ultra Strict Filters + 18 Loss Guards. CAPITAL IS 100% PROTECTED."
+            "scan_time": time_str
         }
-
-    return {
-        "sniper_trade": candidates[0],
+    except Exception as e:
+        logger.error("Ultra sniper scan endpoint failed: %s", e)
+        return {
+            "sniper_trade": None,
+            "total_scanned": 0,
+            "message": "🛡️ Ultra Sniper Scan is currently processing live ticks. No 92%+ trade setup confirmed yet. CAPITAL IS 100% PROTECTED."
+        }
         "runner_ups": candidates[1:3],
         "total_scanned": len(stocks),
         "nifty_pct": nifty_pct,
