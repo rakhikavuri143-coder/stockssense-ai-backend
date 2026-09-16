@@ -135,30 +135,50 @@ function toggleTradingMode() {
 
 function syncTradingModeUI() {
   const btn = document.getElementById('modeToggleBtn');
-  if (!btn) return;
-  if (currentMode === 'live') {
-    btn.textContent = '🟢 LIVE';
-    btn.style.color = '#00ff88';
-    btn.style.borderColor = 'rgba(0,255,136,0.3)';
-    btn.style.background = 'rgba(0,255,136,0.06)';
-  } else {
-    btn.textContent = '📝 PAPER';
-    btn.style.color = '#ffbd59';
-    btn.style.borderColor = 'rgba(255,189,89,0.3)';
-    btn.style.background = '#1e293b';
+  if (btn) {
+    if (currentMode === 'live') {
+      btn.textContent = '🟢 LIVE TRADING';
+      btn.style.color = '#00ff88';
+      btn.style.borderColor = 'rgba(0,255,136,0.4)';
+      btn.style.background = 'rgba(0,255,136,0.12)';
+      btn.style.boxShadow = '0 0 12px rgba(0,255,136,0.3)';
+    } else {
+      btn.textContent = '📝 PAPER TRADING';
+      btn.style.color = '#ffbd59';
+      btn.style.borderColor = 'rgba(255,189,89,0.4)';
+      btn.style.background = 'rgba(255,189,89,0.12)';
+      btn.style.boxShadow = '0 0 12px rgba(255,189,89,0.3)';
+    }
   }
+
   const paperTab = document.getElementById('tab-paper');
   if (paperTab) {
     paperTab.textContent = currentMode === 'live' ? '💼 Live Trading' : '📝 Paper Trading';
   }
   const balLabel = document.querySelector('.balance-label');
   if (balLabel) {
-    balLabel.textContent = currentMode === 'live' ? 'Live Angel One Balance' : 'Paper Balance';
+    balLabel.textContent = currentMode === 'live' ? 'Live Angel One Balance' : 'Paper Starting Capital';
   }
   const resetBtn = document.querySelector('.btn-reset');
   if (resetBtn) {
-    // Hide reset button in live mode for safety
     resetBtn.style.display = currentMode === 'live' ? 'none' : 'inline-block';
+  }
+
+  // Journal Mode Header Sync
+  const jTitle = document.getElementById('journalModeTitle');
+  const jSub   = document.getElementById('journalModeSub');
+  const jBtn   = document.getElementById('journalModeToggleBtn');
+  if (jTitle) {
+    jTitle.textContent = currentMode === 'live' ? '💼 LIVE TRADING JOURNAL (Angel One)' : '📝 PAPER TRADING JOURNAL (Virtual)';
+    jTitle.style.color = currentMode === 'live' ? '#60a5fa' : '#fbbf24';
+  }
+  if (jSub) {
+    jSub.textContent = currentMode === 'live'
+      ? 'Showing real Angel One live trade executions, P&L analytics, and order history.'
+      : 'Showing virtual paper trade performance, simulated P&L, and paper execution history.';
+  }
+  if (jBtn) {
+    jBtn.textContent = currentMode === 'live' ? '📝 Switch to Paper Journal' : '💼 Switch to Live Journal';
   }
 }
 
@@ -1613,11 +1633,17 @@ async function loadTrades() {
     const res  = await fetch(`/api/journal/trades?mode=${currentMode}`);
     const data = await res.json();
     const body = document.getElementById('tradesBody');
+    const jBody = document.getElementById('journalTradesBody');
+
+    const emptyRow = '<tr><td colspan="8" style="text-align:center;color:#7a8ba8;padding:1.5rem">No closed trades yet in ' + (currentMode === 'live' ? 'Live' : 'Paper') + ' mode.</td></tr>';
+
     if (!data.trades || data.trades.length === 0) {
-      body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#7a8ba8;padding:1.5rem">No closed trades yet.</td></tr>';
+      if (body) body.innerHTML = emptyRow;
+      if (jBody) jBody.innerHTML = emptyRow;
       return;
     }
-    body.innerHTML = data.trades.filter(t => t.status !== 'OPEN').map(t => {
+
+    const html = data.trades.filter(t => t.status !== 'OPEN').map(t => {
       const pnlSign = (t.pnl || 0) >= 0 ? '+' : '';
       const pnlCls  = (t.pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
       
@@ -1637,7 +1663,7 @@ async function loadTrades() {
 
       return `
         <tr>
-          <td>${t.symbol.replace('.NS','')}</td>
+          <td><b>${t.symbol.replace('.NS','')}</b><br><small style="color:#7a8ba8">${t.company_name || ''}</small></td>
           <td><span class="badge ${t.action.toLowerCase()}" style="font-size:0.7rem">${t.action}</span></td>
           <td>₹${t.entry_price?.toFixed(2)}</td>
           <td>${t.exit_price ? '₹'+t.exit_price.toFixed(2) : '—'}</td>
@@ -1648,6 +1674,10 @@ async function loadTrades() {
         </tr>
       `;
     }).join('');
+
+    const finalHtml = html || emptyRow;
+    if (body) body.innerHTML = finalHtml;
+    if (jBody) jBody.innerHTML = finalHtml;
   } catch (e) {
     console.error('Trades error:', e);
   }
@@ -1655,6 +1685,7 @@ async function loadTrades() {
 
 // ─────────────────────── JOURNAL ───────────────────────
 async function loadJournal() {
+  syncTradingModeUI();
   try {
     const [wRes, mRes, sRes] = await Promise.all([
       fetch(`/api/journal/weekly?mode=${currentMode}`),
@@ -1668,6 +1699,7 @@ async function loadJournal() {
     renderStats('weeklyStats',  weekly);
     renderStats('monthlyStats', monthly);
     renderSignalHistory(signals.signals || []);
+    await loadTrades();
   } catch (e) {
     console.error('Journal error:', e);
   }
