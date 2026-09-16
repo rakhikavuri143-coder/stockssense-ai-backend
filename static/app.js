@@ -384,17 +384,28 @@ function startAutoScanCountdown(seconds = 180) {
 }
 
 // ─────────────────────── SCAN ALL ───────────────────────
+let isScanInProgress = false;
+
 async function startScan(category = 'nifty50') {
+  if (isScanInProgress) {
+    showToast('⏳ A scan is already in progress. Please wait for it to complete...', '');
+    return;
+  }
+  isScanInProgress = true;
+
   clearAutoScanTimer();
   lastScanCategory = category;
   const isBudget = category === 'budget';
   const isScalp  = category === 'fast_scalp';
   const btnId    = isScalp ? 'scalpScanBtn' : (isBudget ? 'budgetScanBtn' : 'scanBtn');
-  const btn = document.getElementById(btnId);
+  const btn      = document.getElementById(btnId);
+
+  // Set clicked button to loading
   if (btn) {
     btn.classList.add('loading');
     btn.innerHTML = '<span class="btn-icon">⏳</span> Scanning...';
   }
+
   const grid = document.getElementById('signalGrid');
   if (grid) grid.innerHTML = '';
   currentSignals = [];
@@ -417,6 +428,10 @@ async function startScan(category = 'nifty50') {
     statusBar.style.display = 'flex';
   };
 
+  // 45-second safety AbortController to prevent infinite hanging streams
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 45000);
+
   try {
     let res;
     try {
@@ -424,10 +439,11 @@ async function startScan(category = 'nifty50') {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confidence_threshold: threshold, category: category }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error('Stream HTTP ' + res.status);
     } catch (streamErr) {
-      console.warn('Streaming scan failed, falling back to standard scan:', streamErr);
+      console.warn('Streaming scan failed or timed out, falling back to standard scan:', streamErr);
       setStatusLoading(
         isScalp  ? '🔥 Scalp-scanning 18 budget stocks (85% confidence)...' :
         isBudget ? 'Scanning 18 Budget stocks with AI...' :
@@ -440,7 +456,6 @@ async function startScan(category = 'nifty50') {
       });
       const data = await fallbackRes.json();
       currentSignals = data.signals || [];
-      // Sort signals by confidence
       currentSignals.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
       let r = 1;
       currentSignals.forEach(s => { if (s.signal !== 'AVOID' && r <= 5) s.rank = r++; });
@@ -459,7 +474,7 @@ async function startScan(category = 'nifty50') {
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n\n');
-      buffer = lines.pop();  // keep incomplete last chunk
+      buffer = lines.pop(); // keep incomplete last chunk
 
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
@@ -477,7 +492,7 @@ async function startScan(category = 'nifty50') {
         } else if (msg.type === 'done') {
           if (statusBar) statusBar.style.display = 'none';
 
-          // Sort all signals by Confidence Score (Highest Win-Probability first)
+          // Sort all signals by Confidence Score
           currentSignals.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
           // Assign Top 5 Ranks
@@ -508,27 +523,45 @@ async function startScan(category = 'nifty50') {
           } else {
             showToast(`Scan complete. Top 5 Best Technical Setups Ranked!`, '');
           }
-          if (currentSignals.length === 0) {
-            const sigGrid = document.getElementById('signalGrid');
-            if (sigGrid) sigGrid.innerHTML = '<div class="empty-state">No signals found. Try lowering the confidence threshold or run a new scan.</div>';
-          }
         }
       }
     }
-  } catch (e) {
-    showToast('Scan failed: ' + e.message, '');
-    if (statusBar) statusBar.style.display = 'none';
-  } finally {
-    if (btn) {
-      btn.classList.remove('loading');
-      if (isScalp) {
-        btn.innerHTML = '<span class="btn-icon">🔥</span> 1-Hr Fast Scalp';
-      } else if (isBudget) {
-        btn.innerHTML = '<span class="btn-icon">⚡</span> Scan Budget Stocks';
-      } else {
-        btn.innerHTML = '<span class="btn-icon">🔍</span> Scan Nifty 50';
-      }
+
+    // After stream completes, render whatever signals were collected
+    if (currentSignals.length === 0 && grid) {
+      grid.innerHTML = '<div class="empty-state">No high-confidence signals found right now. Try lowering the Min Confidence slider or scanning another category.</div>';
+    } else if (currentSignals.length > 0) {
+      renderSignals(currentSignals);
     }
+  } catch (e) {
+    console.error('Scan error:', e);
+    showToast('Scan completed or notice: ' + (e.name === 'AbortError' ? 'Scan timed out, showing partial results' : e.message), '');
+    if (statusBar) statusBar.style.display = 'none';
+    if (currentSignals.length > 0) {
+      renderSignals(currentSignals);
+    } else if (grid) {
+      grid.innerHTML = '<div class="empty-state">Scan completed. No signals matching current criteria. Try adjusting the Min Confidence slider.</div>';
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    isScanInProgress = false;
+
+    // RESTORE ALL SCAN BUTTONS TO NORMAL STATE
+    const allScanBtns = [
+      { id: 'scanBtn', html: '<span class="btn-icon">🔍</span> Scan Nifty 50' },
+      { id: 'budgetScanBtn', html: '<span class="btn-icon">⚡</span> Scan Budget Stocks' },
+      { id: 'scalpScanBtn', html: '<span class="btn-icon">🔥</span> 1-Hr Fast Scalp' },
+      { id: 'sniperScanBtn', html: '<span class="btn-icon">👑</span> 1-Sniper Trade (92%+)' }
+    ];
+    allScanBtns.forEach(item => {
+      const b = document.getElementById(item.id);
+      if (b) {
+        b.classList.remove('loading');
+        b.innerHTML = item.html;
+      }
+    });
+
+    if (statusBar) statusBar.style.display = 'none';
     // Scalp mode: auto-refresh every 90s; normal: every 3 min
     startAutoScanCountdown(isScalp ? 90 : 180);
   }
