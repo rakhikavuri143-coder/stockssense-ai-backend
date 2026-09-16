@@ -75,26 +75,54 @@ def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
 
 # ─────────────────────── SIGNAL ALERTS ───────────────────────
 
+_sent_signals_today: set[str] = set()
+_last_reset_date: str = ""
+
 def alert_scan_signals(signals: list):
-    """Send Telegram alert for Top 3 Nifty 50 + Top 3 Budget Stock BUY/SELL signals."""
+    """Send Telegram alert for NEW Top 3 Nifty 50 + Top 3 Budget Stock BUY/SELL signals (deduplicated per day)."""
+    global _sent_signals_today, _last_reset_date
     if not signals:
         return
+
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+    if _last_reset_date != today_str:
+        _sent_signals_today.clear()
+        _last_reset_date = today_str
 
     from backend.indian_stocks import BUDGET_LOW_PRICED_STOCKS
     budget_symbols = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS)
 
-    buy_sell = [s for s in signals if s.get("signal") in ("BUY", "SELL") and s.get("confidence", 0) >= 80]
-    if not buy_sell:
+    # Filter signals >= 85% confidence that have NOT been alerted today
+    new_candidates = []
+    for s in signals:
+        sym  = s.get("symbol", "")
+        sig  = s.get("signal", "")
+        conf = s.get("confidence", 0)
+        key  = f"{sym}_{sig}_{today_str}"
+        if sig in ("BUY", "SELL") and conf >= 85.0 and key not in _sent_signals_today:
+            new_candidates.append((key, s))
+
+    if not new_candidates:
         return
 
-    nifty_signals  = [s for s in buy_sell if s.get("symbol") not in budget_symbols][:3]
-    budget_signals = [s for s in buy_sell if s.get("symbol") in budget_symbols][:3]
+    nifty_items  = [item for item in new_candidates if item[1].get("symbol") not in budget_symbols][:3]
+    budget_items = [item for item in new_candidates if item[1].get("symbol") in budget_symbols][:3]
+
+    if not nifty_items and not budget_items:
+        return
+
+    # Mark these keys as alerted today
+    for key, _ in nifty_items + budget_items:
+        _sent_signals_today.add(key)
+
+    nifty_signals  = [item[1] for item in nifty_items]
+    budget_signals = [item[1] for item in budget_items]
 
     header = f"<b>📊 StockSense AI — Signal Alert</b>\n<i>{_ist_now()}</i>\n{'=' * 30}\n"
     cards = []
 
     if nifty_signals:
-        cards.append("<b>🏆 TOP 3 NIFTY 50 SIGNALS:</b>")
+        cards.append("<b>🏆 TOP NIFTY 50 NEW SIGNALS:</b>")
         for idx, s in enumerate(nifty_signals, 1):
             signal_emoji = "🟢 BUY" if s["signal"] == "BUY" else "🔴 SELL"
             approved_tag = "✅ APPROVED" if s.get("approved") else "⚠️ REVIEW"
@@ -109,7 +137,7 @@ def alert_scan_signals(signals: list):
     if budget_signals:
         if nifty_signals:
             cards.append("\n" + "=" * 30)
-        cards.append("<b>⚡ TOP 3 BUDGET STOCK SIGNALS (Under ₹200):</b>")
+        cards.append("<b>⚡ TOP BUDGET STOCK NEW SIGNALS (Under ₹200):</b>")
         for idx, s in enumerate(budget_signals, 1):
             signal_emoji = "🟢 BUY" if s["signal"] == "BUY" else "🔴 SELL"
             approved_tag = "✅ APPROVED" if s.get("approved") else "⚠️ REVIEW"
