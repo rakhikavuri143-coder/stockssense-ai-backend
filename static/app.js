@@ -134,8 +134,8 @@ function toggleTradingMode() {
 }
 
 function syncTradingModeUI() {
-  const btn = document.getElementById('modeToggleBtn');
-  if (btn) {
+  const btns = [document.getElementById('modeToggleBtn'), document.getElementById('modeToggleBtnToolbar')].filter(Boolean);
+  btns.forEach(btn => {
     if (currentMode === 'live') {
       btn.textContent = '🟢 LIVE TRADING';
       btn.style.color = '#00ff88';
@@ -149,7 +149,7 @@ function syncTradingModeUI() {
       btn.style.background = 'rgba(255,189,89,0.12)';
       btn.style.boxShadow = '0 0 12px rgba(255,189,89,0.3)';
     }
-  }
+  });
 
   const paperTab = document.getElementById('tab-paper');
   if (paperTab) {
