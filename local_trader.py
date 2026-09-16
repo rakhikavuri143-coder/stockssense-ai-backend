@@ -339,14 +339,14 @@ def _ultra_sniper_scan_single(stock: dict) -> Optional[dict]:
 
 
 def check_market_hours_ist() -> tuple[bool, str]:
-    """Check if Indian stock market (NSE) is currently open (Mon-Fri 9:15 AM - 3:30 PM IST)."""
+    """Check if Indian stock market (NSE) is currently open for new entries (Mon-Fri 9:15 AM - 3:00 PM IST)."""
     from datetime import datetime, timezone, timedelta
     ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     if ist_now.weekday() in (5, 6):
-        return False, "🌙 MARKET IS CLOSED TODAY (Weekend: Saturday/Sunday). Live signals active Mon-Fri 9:15 AM - 3:30 PM IST."
+        return False, "🌙 MARKET IS CLOSED TODAY (Weekend: Saturday/Sunday). Live signals active Mon-Fri 9:15 AM - 3:00 PM IST."
     time_str = ist_now.strftime("%H:%M")
-    if not ("09:15" <= time_str <= "15:30"):
-        return False, f"🌙 MARKET IS CLOSED RIGHT NOW ({time_str} IST). Live NSE Trading Hours are 9:15 AM - 3:30 PM IST. Zero signals generated outside market hours to protect capital."
+    if not ("09:15" <= time_str <= "15:00"):
+        return False, f"🌙 NEW ENTRIES CLOSED ({time_str} IST). Live NSE Trading new entry cutoff is 3:00 PM IST. Zero new signals generated during EOD squareoff to protect capital."
     return True, "✅ Market is Open"
 
 
