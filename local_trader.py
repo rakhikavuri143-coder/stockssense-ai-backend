@@ -555,17 +555,38 @@ def get_paper_balance_calc():
         return 100000.0
 
 
+def calculate_position_size(entry_price: float, sl_price: float, risk_amount: float = 300.0) -> int:
+    """
+    Calculate dynamic position size (shares) based on strict ₹300 total loss limit.
+    Formula: Quantity = max(1, int(300.0 / abs(Entry Price - SL Price)))
+    """
+    try:
+        p = float(entry_price or 0)
+        sl = float(sl_price or 0)
+        risk_per_share = abs(p - sl)
+        if risk_per_share <= 0:
+            risk_per_share = (p * 0.01) if p > 0 else 1.0
+        qty = int(risk_amount / risk_per_share)
+        return max(1, qty)
+    except Exception:
+        return 1
+
+
 def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mode="paper", order_type="MARKET"):
     current_mode = mode or config.get("trading_mode", "paper")
     clean_sym = symbol.upper().strip().replace(".NS", "-EQ")
     if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
         clean_sym = f"{clean_sym}-EQ"
     
-    q = max(1, int(qty or 1))
     p = float(price or 0)
     sl_val = float(sl or 0)
     t1_val = float(t1 or 0)
     t2_val = float(t2 or 0)
+    
+    # 📐 Dynamic ₹300 Position Sizing: Qty = int(300 / |Entry - SL|)
+    calc_qty = calculate_position_size(p, sl_val, 300.0)
+    q = int(qty) if (qty and int(qty) > 0) else calc_qty
+    q = max(1, q)
     import time
 
     if current_mode == "paper":
@@ -575,7 +596,7 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             f"📝 <b>PAPER TRADE EXECUTED</b>\n"
             f"<b>Symbol:</b> {clean_sym}\n"
             f"<b>Action:</b> {action.upper()}\n"
-            f"<b>Qty:</b> {q}\n"
+            f"<b>Qty:</b> {q} (₹300 Risk Sizing)\n"
             f"<b>Entry Price:</b> ₹{p:.2f}\n"
             f"<b>SL:</b> ₹{sl_val:.2f} | <b>T1:</b> ₹{t1_val:.2f}"
         )
@@ -584,7 +605,7 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             "success": True,
             "mode": "paper",
             "order_id": f"PAPER-{tid or int(time.time())}",
-            "message": f"🎉 PAPER TRADE PLACED SUCCESSFULLY!\nSymbol: {clean_sym}\nAction: {action.upper()}\nQty: {q}\nPrice: ₹{p:.2f}"
+            "message": f"🎉 PAPER TRADE PLACED SUCCESSFULLY!\nSymbol: {clean_sym}\nAction: {action.upper()}\nQty: {q}\nPrice: ₹{p:.2f}\nRisk Cap: ₹300.00"
         }
     else:
         # Live order execution via Angel One SmartAPI (MARKET order type by default for instant fill)
@@ -593,13 +614,22 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             order_id = res.get("order_id", "")
             save_live_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val, order_id=order_id)
             register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
+            
+            # 🛡️ Instant Exchange Stop-Loss Order Placement in Angel One Order Book
+            sl_res = {}
+            if sl_val > 0:
+                sl_res = place_smartapi_sl_order(clean_sym, symbol_token, action, q, sl_val)
+
+            sl_note = f"\n<b>Exchange SL ID:</b> {sl_res.get('sl_order_id')}" if sl_res.get("success") else "\n<b>SL Monitor:</b> Active (Real-time Guard)"
             tg_msg = (
                 f"💼 <b>LIVE ORDER EXECUTED (ANGEL ONE)</b>\n"
                 f"<b>Symbol:</b> {clean_sym}\n"
                 f"<b>Action:</b> {action.upper()}\n"
-                f"<b>Qty:</b> {q}\n"
+                f"<b>Qty:</b> {q} (₹300 Risk Sizing)\n"
                 f"<b>Entry Price:</b> ₹{p:.2f}\n"
+                f"<b>SL:</b> ₹{sl_val:.2f}\n"
                 f"<b>Order ID:</b> {order_id}"
+                f"{sl_note}"
             )
             send_telegram_message(tg_msg)
         return res
@@ -866,6 +896,74 @@ def place_order(symbol, symbol_token, action, qty, price=0, exchange="NSE", orde
     else:
         msg = result.get("message", "Unknown error")
         return {"success": False, "message": f"❌ Angel One Error: {msg}"}
+
+
+def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: int, sl_price: float, exchange: str = "NSE", product: str = "INTRADAY") -> dict:
+    """
+    Place an automatic Exchange STOPLOSS_LIMIT order directly in Angel One Order Book.
+    Counter-action is used (SELL SL for BUY entry, BUY SL for SELL entry).
+    """
+    global auth_session
+    if not auth_session.get("jwtToken"):
+        lres = login_smartapi()
+        if not lres.get("success"):
+            return lres
+
+    clean_sym = symbol.upper().strip()
+    if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE") and not clean_sym.endswith(".NS"):
+        clean_sym = f"{clean_sym}-EQ"
+    clean_sym = clean_sym.replace(".NS", "-EQ")
+
+    if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
+        symbol_token = STOCK_TOKENS.get(clean_sym) or STOCK_TOKENS.get(clean_sym.replace("-EQ", ""))
+
+    if not symbol_token:
+        return {"success": False, "message": f"Could not resolve token for SL order: {symbol}"}
+
+    counter_action = "SELL" if action.upper() == "BUY" else "BUY"
+    trigger_p = round(float(sl_price), 2)
+    # Give a slight price buffer for LIMIT order upon trigger to ensure execution
+    limit_p = round(trigger_p * 0.996 if counter_action == "SELL" else trigger_p * 1.004, 2)
+
+    my_ip = auth_session.get("my_ip", get_my_ip())
+    headers = {
+        "Authorization": f"Bearer {auth_session['jwtToken']}",
+        "Content-Type": "application/json",
+        "X-PrivateKey": auth_session["api_key"],
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": my_ip,
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
+    }
+
+    payload = {
+        "variety": "STOPLOSS",
+        "tradingsymbol": clean_sym,
+        "symboltoken": str(symbol_token),
+        "transactiontype": counter_action,
+        "exchange": exchange.upper(),
+        "ordertype": "STOPLOSS_LIMIT",
+        "producttype": product.upper(),
+        "duration": "DAY",
+        "price": str(limit_p),
+        "triggerprice": str(trigger_p),
+        "quantity": str(max(1, int(qty))),
+        "squareoff": "0.00",
+        "stoploss": "0.00"
+    }
+
+    url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/placeOrder"
+    result = api_call(url, payload, headers)
+    if result.get("status") is True and "data" in result:
+        sl_order_id = result["data"].get("uniqueorderid") or result["data"].get("orderid")
+        print(f"🛡️ Angel One Exchange SL Order Placed! ID: {sl_order_id} | Trigger: ₹{trigger_p:.2f} | Limit: ₹{limit_p:.2f}")
+        return {"success": True, "sl_order_id": sl_order_id, "message": f"Exchange SL Order Placed: {sl_order_id}"}
+    else:
+        err_msg = result.get("message", "SL Order rejected")
+        print(f"⚠️ Angel One Exchange SL Order note: {err_msg} (Local SL Guard Monitor active in background)")
+        return {"success": False, "message": err_msg}
 
 
 SCRIP_TOKEN_CACHE = {}
@@ -2081,12 +2179,9 @@ function renderSniperHeroCard(s) {
     const sl = parseFloat(s.stoploss || (isBuy ? price*0.988 : price*1.012)).toFixed(2);
     const score = s.score || 95.0;
 
-    const buyingPower = (currentBalance || 500) * 5;
-    const maxLoss = 300;
-    const lossPerShare = Math.abs(price - parseFloat(sl)) || (price * 0.01) || 1;
-    const qtyByMargin = Math.max(1, Math.floor(buyingPower / price));
-    const qtyByRisk = Math.max(1, Math.floor(maxLoss / lossPerShare));
-    const qty = Math.min(qtyByMargin, qtyByRisk);
+    // 📐 Strict ₹300 Max Risk Position Sizing: Qty = int(300 / |Price - SL|)
+    const lossPerShare = Math.abs(price - parseFloat(sl)) || (price * 0.01) || 1.0;
+    const qty = Math.max(1, Math.floor(300.0 / lossPerShare));
 
     cont.innerHTML = `
     <div style="background:linear-gradient(145deg, #111827, #1e1b4b); border:2px solid #f59e0b; border-radius:18px; padding:20px; box-shadow:0 10px 40px rgba(245,158,11,0.25); position:relative; overflow:hidden;">
@@ -2154,13 +2249,9 @@ function renderSignals(sigs, deepMode) {
         const sl = parseFloat(s.stoploss || (isBuy ? (price*0.99) : (price*1.01))).toFixed(1);
         const conf = s.confidence ? `${s.confidence}%` : '88%';
 
-        // 5X MIS Quantity with ₹300 Loss Cap
-        const buyingPower = (currentBalance || 500) * 5;
-        const maxLoss = 300;
-        const lossPerShare = Math.abs(price - parseFloat(sl)) || (price * 0.01) || 1;
-        const qtyByMargin = Math.max(1, Math.floor(buyingPower / price));
-        const qtyByRisk = Math.max(1, Math.floor(maxLoss / lossPerShare));
-        const qty = Math.min(qtyByMargin, qtyByRisk);
+        // 📐 Strict ₹300 Max Risk Position Sizing: Qty = int(300 / |Price - SL|)
+        const lossPerShare = Math.abs(price - parseFloat(sl)) || (price * 0.01) || 1.0;
+        const qty = Math.max(1, Math.floor(300.0 / lossPerShare));
 
         // Deep AI extra info
         const riskBadge = deepMode && s.risk_level ? 
@@ -2186,7 +2277,7 @@ function renderSignals(sigs, deepMode) {
                 <span>Entry<b style="color:#f8fafc;">₹${price.toFixed(2)}</b></span>
                 <span>🎯 T1<b style="color:#34d399;">₹${parseFloat(s.target || target).toFixed(2)}</b></span>
                 <span>🚀 T2<b style="color:#fbbf24;">₹${parseFloat(s.target2 || (isBuy ? price*1.03 : price*0.97)).toFixed(2)}</b></span>
-                <span>🛡️ SL<b style="color:#f87171;">₹${parseFloat(s.stoploss || sl).toFixed(2)}</b></span>
+                <span>🛡️ SL (₹300 Risk)<b style="color:#f87171;">₹${parseFloat(s.stoploss || sl).toFixed(2)}</b></span>
             </div>
 
             ${deepMode && (s.rvol || s.trend_1h) ? `
@@ -2223,14 +2314,19 @@ function openTradeModal(sym, tok, action, qty, price, target1, target2, sl) {
         submitBtn.textContent = `⚡ CONFIRM LIVE ORDER (ANGEL ONE)`;
     }
 
-    document.getElementById('modal_qty').value = qty;
-    document.getElementById('modal_price').value = parseFloat(price).toFixed(2);
-    
     const isBuy = action === 'BUY';
     const p = parseFloat(price) || 0;
+    const slVal = sl ? parseFloat(sl) : (p * (isBuy ? 0.988 : 1.012));
+    
+    // Dynamic ₹300 Risk Quantity
+    const riskPts = Math.abs(p - slVal) || (p * 0.01) || 1.0;
+    const calculatedQty = (qty && parseInt(qty) > 0) ? parseInt(qty) : Math.max(1, Math.floor(300.0 / riskPts));
+
+    document.getElementById('modal_qty').value = calculatedQty;
+    document.getElementById('modal_price').value = p.toFixed(2);
     document.getElementById('modal_t1').value = target1 ? parseFloat(target1).toFixed(2) : (p * (isBuy ? 1.015 : 0.985)).toFixed(2);
     document.getElementById('modal_t2').value = target2 ? parseFloat(target2).toFixed(2) : (p * (isBuy ? 1.030 : 0.970)).toFixed(2);
-    document.getElementById('modal_sl').value = sl ? parseFloat(sl).toFixed(2) : (p * (isBuy ? 0.988 : 1.012)).toFixed(2);
+    document.getElementById('modal_sl').value = slVal.toFixed(2);
     
     updateModalMath();
     document.getElementById('trade-modal-overlay').style.display = 'flex';
@@ -2241,14 +2337,21 @@ function closeTradeModal() {
     document.getElementById('modal-alert').style.display = 'none';
 }
 
-function updateModalMath() {
+function updateModalMath(autoRecalcQty = false) {
     const p = parseFloat(document.getElementById('modal_price').value) || 0;
-    const q = parseInt(document.getElementById('modal_qty').value) || 1;
-    const t1 = parseFloat(document.getElementById('modal_t1').value) || p;
-    const t2 = parseFloat(document.getElementById('modal_t2').value) || p;
     const sl = parseFloat(document.getElementById('modal_sl').value) || p;
     const action = document.getElementById('modal_action').textContent.trim();
     const isBuy = action === 'BUY';
+
+    if (autoRecalcQty && p > 0 && sl > 0) {
+        const riskPoints = Math.abs(p - sl) || (p * 0.01) || 1.0;
+        const autoQty = Math.max(1, Math.floor(300.0 / riskPoints));
+        document.getElementById('modal_qty').value = autoQty;
+    }
+
+    const q = parseInt(document.getElementById('modal_qty').value) || 1;
+    const t1 = parseFloat(document.getElementById('modal_t1').value) || p;
+    const t2 = parseFloat(document.getElementById('modal_t2').value) || p;
 
     const margin = (p * q) / 5.0;
     const exposure = p * q;
@@ -2264,6 +2367,10 @@ function updateModalMath() {
     document.getElementById('modal_pnl_t1').textContent = '+₹' + Math.max(0, t1Gain).toFixed(2);
     document.getElementById('modal_pnl_t2').textContent = '+₹' + Math.max(0, t2Gain).toFixed(2);
     document.getElementById('modal_pnl_sl').textContent = '-₹' + Math.max(0, slLoss).toFixed(2);
+}
+
+function applyRiskSizing() {
+    updateModalMath(true);
 }
 
 function adjustModalQty(delta) {
@@ -2373,15 +2480,16 @@ window.onload = init;
 
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
             <div>
-                <label>Quantity (Shares)</label>
+                <label>Quantity (Shares) <span style="font-size:10px; color:#10b981; font-weight:700;">(₹300 Risk Sizing)</span></label>
                 <div style="display:flex; gap:6px;">
-                    <input id="modal_qty" type="number" value="1" oninput="updateModalMath()" style="margin-bottom:0;">
-                    <button class="btn btn-primary" style="width:auto; padding:0 10px; font-size:11px;" onclick="setModalMaxQty()">MAX</button>
+                    <input id="modal_qty" type="number" value="1" oninput="updateModalMath(false)" style="margin-bottom:0;">
+                    <button class="btn btn-primary" style="width:auto; padding:0 8px; font-size:10px; background:#10b981; border:none;" onclick="applyRiskSizing()">🎯 ₹300</button>
+                    <button class="btn btn-primary" style="width:auto; padding:0 8px; font-size:10px;" onclick="setModalMaxQty()">MAX</button>
                 </div>
             </div>
             <div>
                 <label>Order Price (₹)</label>
-                <input id="modal_price" type="number" step="0.05" oninput="updateModalMath()" style="margin-bottom:0;">
+                <input id="modal_price" type="number" step="0.05" oninput="updateModalMath(true)" style="margin-bottom:0;">
             </div>
         </div>
 
@@ -2389,15 +2497,15 @@ window.onload = init;
         <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:14px;">
             <div>
                 <label style="color:#34d399;">🎯 Target 1 (T1)</label>
-                <input id="modal_t1" type="number" step="0.05" oninput="updateModalMath()" style="margin-bottom:0; color:#34d399; font-weight:700;">
+                <input id="modal_t1" type="number" step="0.05" oninput="updateModalMath(false)" style="margin-bottom:0; color:#34d399; font-weight:700;">
             </div>
             <div>
                 <label style="color:#fbbf24;">🚀 Target 2 (T2)</label>
-                <input id="modal_t2" type="number" step="0.05" oninput="updateModalMath()" style="margin-bottom:0; color:#fbbf24; font-weight:700;">
+                <input id="modal_t2" type="number" step="0.05" oninput="updateModalMath(false)" style="margin-bottom:0; color:#fbbf24; font-weight:700;">
             </div>
             <div>
                 <label style="color:#f87171;">🛡️ Stop Loss (SL)</label>
-                <input id="modal_sl" type="number" step="0.05" oninput="updateModalMath()" style="margin-bottom:0; color:#f87171; font-weight:700;">
+                <input id="modal_sl" type="number" step="0.05" oninput="updateModalMath(true)" style="margin-bottom:0; color:#f87171; font-weight:700;">
             </div>
         </div>
 
