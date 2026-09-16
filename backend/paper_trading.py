@@ -188,10 +188,12 @@ def place_paper_order(
         logger.warning("Circuit proximity check failed for %s: %s", symbol, ge)
 
 
-    sym_base = symbol.replace(".NS", "").replace(".BO", "").strip()
+    sym_base = symbol.upper().replace(".NS", "").replace(".BO", "").replace("-EQ", "").replace("-BE", "").strip()
     sym_ns   = f"{sym_base}.NS"
     sym_bo   = f"{sym_base}.BO"
-    if any(s in open_positions for s in (symbol, sym_base, sym_ns, sym_bo)):
+    sym_eq   = f"{sym_base}-EQ"
+    sym_be   = f"{sym_base}-BE"
+    if any(s in open_positions for s in (symbol, sym_base, sym_ns, sym_bo, sym_eq, sym_be)):
         return {"success": False, "message": f"Already have an open paper position in {sym_base}"}
 
     # 1. Daily Drawdown Circuit Breaker (-1.5% Max Daily Capital Loss Protection)
@@ -317,14 +319,25 @@ def close_paper_position(
     """
     Close an open paper position at exit_price and save P&L into DB.
     """
-    # Flexible symbol matching (supports ONGC, ONGC.NS, ONGC.BO)
-    sym_base = symbol.replace(".NS", "").replace(".BO", "").strip()
-    sym_ns   = f"{sym_base}.NS"
-    sym_bo   = f"{sym_base}.BO"
+    # Flexible symbol matching (supports ONGC, ONGC.NS, ONGC-EQ, ONGC.BO, etc.)
+    sym_base = symbol.upper().replace(".NS", "").replace(".BO", "").replace("-EQ", "").replace("-BE", "").strip()
+    sym_variants = list(set([
+        symbol, symbol.upper(), symbol.lower(),
+        sym_base, sym_base.upper(),
+        f"{sym_base}.NS", f"{sym_base}.BO", f"{sym_base}-EQ", f"{sym_base}-BE"
+    ]))
     trade = db.query(PaperTrade).filter(
         PaperTrade.status == "OPEN",
-        PaperTrade.symbol.in_([symbol, sym_base, sym_ns, sym_bo])
+        PaperTrade.symbol.in_(sym_variants)
     ).first()
+
+    if not trade:
+        # Fallback search if exact variant matching misses due to unusual formatting
+        trade = db.query(PaperTrade).filter(
+            PaperTrade.status == "OPEN",
+            PaperTrade.symbol.like(f"%{sym_base}%")
+        ).first()
+
     if not trade:
         return {"success": False, "message": f"No open paper position found for {symbol}"}
 
