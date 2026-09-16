@@ -2,14 +2,16 @@
 backend/memory_guard.py
 StocksSense AI — Real-Time RAM Auto-Cleaner & Memory Watchdog
 Monitors process memory and aggressively purges caches, forces glibc malloc_trim,
-and runs GC when memory approaches limits on Render.
+and runs GC when memory approaches limits on Render (512MB free tier).
 """
 
 import os
 import gc
+import sys
 import ctypes
 import logging
 import platform
+import linecache
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,24 @@ def purge_application_caches():
     except Exception:
         pass
 
+    # 3. yfinance internal ticker cache (grows unbounded if not cleared)
+    try:
+        import yfinance as yf
+        if hasattr(yf, '_CACHE'):
+            yf._CACHE.clear()
+        if hasattr(yf, 'cache'):
+            yf.cache.clear()
+        # Clear any shared session data
+        if hasattr(yf, 'shared') and hasattr(yf.shared, '_CACHE'):
+            yf.shared._CACHE.clear()
+        cleared.append("yfinance_cache")
+    except Exception:
+        pass
+
+    # 4. Clear Python's linecache (stores source lines for tracebacks, grows over time)
+    linecache.clearcache()
+    cleared.append("linecache")
+
     return cleared
 
 
@@ -131,7 +151,7 @@ def cleanup_memory(force: bool = False) -> dict:
     ram_after = get_current_ram_mb()
     
     logger.info(
-        "🧹 RAM Auto-Cleaned: %.1f MB -> %.1f MB (Freed: %.1f MB | GC Objects: %d | malloc_trim: %s)",
+        "RAM Auto-Cleaned: %.1f MB -> %.1f MB (Freed: %.1f MB | GC Objects: %d | malloc_trim: %s)",
         ram_before, ram_after, max(0.0, ram_before - ram_after), collected, trimmed
     )
     
@@ -145,17 +165,67 @@ def cleanup_memory(force: bool = False) -> dict:
     }
 
 
-def ram_watchdog_check(threshold_mb: float = 220.0) -> dict:
+def emergency_cleanup() -> dict:
+    """
+    EMERGENCY: Called when RAM > 350MB. Clears EVERYTHING possible to prevent OOM kill.
+    This is more aggressive than cleanup_memory — drops module-level references too.
+    """
+    ram_before = get_current_ram_mb()
+    logger.warning("EMERGENCY RAM CLEANUP triggered at %.1f MB!", ram_before)
+    
+    # 1. Standard cleanup first
+    purge_application_caches()
+    
+    # 2. Clear ALL __pycache__ and compiled bytecode from memory
+    linecache.clearcache()
+    
+    # 3. Drop all exception context chains (they hold references to entire stack frames)
+    sys.exc_clear() if hasattr(sys, 'exc_clear') else None
+    
+    # 4. Clear warnings filter cache
+    try:
+        import warnings
+        warnings.resetwarnings()
+    except Exception:
+        pass
+    
+    # 5. Force full 3-generation GC
+    gc.collect()
+    gc.collect()  # Double collect to catch weak refs
+    
+    # 6. Release C-heap aggressively
+    release_glibc_memory()
+    
+    ram_after = get_current_ram_mb()
+    logger.warning("EMERGENCY cleanup complete: %.1f MB -> %.1f MB (Freed: %.1f MB)",
+                   ram_before, ram_after, max(0.0, ram_before - ram_after))
+    
+    return {
+        "emergency": True,
+        "ram_before_mb": ram_before,
+        "ram_after_mb": ram_after,
+        "freed_mb": round(max(0.0, ram_before - ram_after), 2),
+    }
+
+
+def ram_watchdog_check(threshold_mb: float = 180.0) -> dict:
     """
     Watchdog function run periodically by APScheduler.
-    If RAM exceeds threshold (default 220 MB on 512 MB Render limit), triggers aggressive purge.
+    - Normal cleanup at 180MB threshold (was 220MB — lowered for more breathing room)
+    - Emergency cleanup at 350MB (last resort before 512MB OOM kill)
     """
     current_ram = get_current_ram_mb()
+    
+    # EMERGENCY: RAM dangerously high — nuclear cleanup
+    if current_ram >= 350.0:
+        return emergency_cleanup()
+    
+    # WARNING: RAM above safe threshold — standard cleanup
     if current_ram >= threshold_mb or current_ram == 0.0:
-        logger.warning("⚠️ RAM usage (%.1f MB) >= threshold (%.1f MB). Triggering Auto RAM Cleaner...", current_ram, threshold_mb)
+        logger.warning("RAM usage (%.1f MB) >= threshold (%.1f MB). Triggering Auto RAM Cleaner...", current_ram, threshold_mb)
         return cleanup_memory(force=True)
     else:
-        # Routine light garbage collection
+        # Routine light garbage collection (generation 0 only — fast)
         gc.collect(0)
         return {
             "status": "normal",

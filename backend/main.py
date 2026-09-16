@@ -162,56 +162,64 @@ async def midday_scan_job():
     await market_open_scan_job()
 
 async def auto_exit_monitor_job():
-    """Check live prices for open paper & live positions every 15s and auto-exit on SL/Target hit."""
-    def _fetch_prices(symbols):
+    """Check live prices for open paper & live positions every 15s and auto-exit on SL/Target hit.
+    Optimized: Uses stdlib-only price fetching (zero yfinance RAM), skips when market is closed."""
+    
+    # ── Market Hours Guard: Skip when market is closed (saves ~16 hrs/day of RAM + API calls) ──
+    from datetime import datetime, timezone, timedelta
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + timedelta(hours=5, minutes=30)
+    
+    # Skip weekends entirely
+    if now_ist.weekday() >= 5:
+        return
+    
+    # Skip outside trading hours (9:00 AM - 4:00 PM IST, with 15min buffer on each side)
+    ist_hour = now_ist.hour + now_ist.minute / 60.0
+    if ist_hour < 8.75 or ist_hour > 16.25:
+        return
+
+    def _fetch_prices_lightweight(symbols):
+        """Fetch live prices using ONLY stdlib urllib (zero extra RAM, no yfinance/pandas)."""
         if not symbols:
             return {}
-        import yfinance as yf
-        from concurrent.futures import ThreadPoolExecutor
+        import urllib.request
+        import json as _json_mod
         prices = {}
 
-        def fetch_single_price(sym):
-            # 1. Direct Yahoo REST Endpoint (ultra-fast, 50ms, zero dependency)
+        for sym in symbols:
+            # Primary: Direct Yahoo Finance REST endpoint (ultra-fast, 50ms, stdlib only)
             try:
-                import urllib.request, json
                 url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"})
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"
+                })
                 with urllib.request.urlopen(req, timeout=5) as resp:
-                    raw = json.loads(resp.read().decode())
+                    raw = _json_mod.loads(resp.read().decode())
                     meta = raw.get("chart", {}).get("result", [{}])[0].get("meta", {})
                     p = meta.get("regularMarketPrice")
                     if p and isinstance(p, (int, float)) and p > 0:
-                        return sym, float(p)
-            except Exception as ex:
-                logger.warning("Direct Yahoo REST fetch failed for %s: %s", sym, ex)
+                        prices[sym] = float(p)
+                        continue
+            except Exception:
+                pass
 
-            # 2. Fallback to yfinance
+            # Fallback: Yahoo v6 quote endpoint
             try:
-                import requests
-                sess = requests.Session()
-                sess.headers.update({
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                url2 = f"https://query1.finance.yahoo.com/v6/finance/quote?symbols={sym}"
+                req2 = urllib.request.Request(url2, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36"
                 })
-                ticker = yf.Ticker(sym, session=sess)
-                fi = getattr(ticker, "fast_info", None)
-                if fi:
-                    p = getattr(fi, "lastPrice", None) or getattr(fi, "last_price", None)
-                    if not p and hasattr(fi, "get"):
-                        p = fi.get("lastPrice") or fi.get("last_price")
-                    if p and isinstance(p, (int, float)) and p > 0:
-                        return sym, float(p)
-                hist = ticker.history(period="1d", interval="1m")
-                if not hist.empty:
-                    return sym, float(hist["Close"].iloc[-1])
-            except Exception as ex:
-                logger.warning("Fast price fetch failed for %s: %s", sym, ex)
-            return sym, None
+                with urllib.request.urlopen(req2, timeout=5) as resp2:
+                    raw2 = _json_mod.loads(resp2.read().decode())
+                    results = raw2.get("quoteResponse", {}).get("result", [])
+                    if results:
+                        p2 = results[0].get("regularMarketPrice")
+                        if p2 and isinstance(p2, (int, float)) and p2 > 0:
+                            prices[sym] = float(p2)
+            except Exception:
+                pass
 
-        with ThreadPoolExecutor(max_workers=min(8, max(1, len(symbols)))) as executor:
-            results = executor.map(fetch_single_price, symbols)
-            for sym, price in results:
-                if price is not None:
-                    prices[sym] = price
         return prices
 
     db_gen = get_db()
@@ -232,7 +240,7 @@ async def auto_exit_monitor_job():
         for lt in live_trades_list:
             symbols.add(lt.symbol)
             
-        live_prices = await asyncio.to_thread(_fetch_prices, list(symbols))
+        live_prices = await asyncio.to_thread(_fetch_prices_lightweight, list(symbols))
 
         # Check paper exits
         if paper_positions:
@@ -252,9 +260,7 @@ async def auto_exit_monitor_job():
         db.close()
         try:
             import gc
-            from backend.technicals_1h import prune_caches
-            prune_caches()
-            gc.collect()
+            gc.collect(0)  # Light generation-0 GC only (fast)
         except Exception:
             pass
 
