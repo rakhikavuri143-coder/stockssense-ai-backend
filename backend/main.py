@@ -893,12 +893,6 @@ async def ultra_sniper_scan_endpoint():
             "total_scanned": 0,
             "message": "🛡️ Ultra Sniper Scan is currently processing live ticks. No 92%+ trade setup confirmed yet. CAPITAL IS 100% PROTECTED."
         }
-        "runner_ups": candidates[1:3],
-        "total_scanned": len(stocks),
-        "nifty_pct": nifty_pct,
-        "is_lunch_trap": is_lunch_trap,
-        "scan_time": time_str
-    }
 
 
 # ─────────────── API: STREAMING ANALYZE (SSE per-stock) ───────────────
