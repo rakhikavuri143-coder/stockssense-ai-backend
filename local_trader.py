@@ -1486,13 +1486,13 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     <!-- Scan Mode Toggle -->
                     <div style="display:flex; gap:8px; margin-bottom:12px;">
-                        <button id="mode-fast-btn" class="btn btn-scan" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800;" onclick="setScanMode('fast')">
+                        <button id="mode-fast-btn" class="btn btn-scan" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; opacity:1; box-shadow:0 0 16px rgba(59,130,246,0.5);" onclick="setScanMode('fast')">
                             ⚡ FAST (5M)
                         </button>
                         <button id="mode-ai-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; opacity:0.6;" onclick="setScanMode('deep')">
                             🧠 DEEP AI
                         </button>
-                        <button id="mode-sniper-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff;" onclick="setScanMode('sniper')">
+                        <button id="mode-sniper-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff; opacity:0.6;" onclick="setScanMode('sniper')">
                             👑 1-SNIPER (92%+)
                         </button>
                     </div>
@@ -1934,7 +1934,7 @@ async function loadOrders() {
     }
 }
 
-let currentScanMode = 'sniper'; // 'fast', 'deep', or 'sniper'
+let currentScanMode = 'fast'; // 'fast', 'deep', or 'sniper'
 
 function setScanMode(mode) {
     currentScanMode = mode;
