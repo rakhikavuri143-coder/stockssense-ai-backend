@@ -1197,8 +1197,11 @@ async function submitQuickOrder() {
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
-      showQoError('⚠️ Order request timed out (20s). Please check Angel One app to confirm if order was placed, then try again.');
-      showToast('⚠️ Request timed out — check Angel One app!', 'sell');
+      const timeoutMsg = currentMode === 'live'
+        ? '⚠️ Order request timed out (20s). Please check Angel One app to confirm if order was placed, then try again.'
+        : '⚠️ Paper order request timed out (20s). Please try again.';
+      showQoError(timeoutMsg);
+      showToast(timeoutMsg, 'sell');
     } else {
       showQoError('❌ Network error: ' + e.message);
       showToast('❌ Network error: ' + e.message, 'sell');

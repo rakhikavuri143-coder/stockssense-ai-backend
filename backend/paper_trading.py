@@ -49,51 +49,26 @@ _circuit_cache = {}
 
 def get_circuit_and_depth_simulator(symbol: str, ltp: float) -> tuple[dict, float]:
     """
-    Fetches stock data from yfinance and constructs simulated market depth
-    to support Guard #17 in the paper trading environment.
-    Uses an in-memory cache to prevent slow API calls.
+    Constructs simulated market depth to support Guard #17 in the paper trading environment.
+    Runs instantly (0ms) using a 10% lower circuit limit to ensure fast order execution.
     """
     global _circuit_cache
-    
-    # If already cached, return immediately
     if symbol in _circuit_cache:
         lower_circuit = _circuit_cache[symbol]
     else:
-        import yfinance as yf
-        lower_circuit = ltp * 0.90  # default fallback to 10% below ltp
-        try:
-            ticker = yf.Ticker(symbol)
-            prev_close = None
-            fast_info = getattr(ticker, "fast_info", None)
-            if fast_info and getattr(fast_info, "previous_close", None):
-                prev_close = float(fast_info.previous_close)
-            
-            if not prev_close:
-                # Use history (much faster than ticker.info)
-                hist = ticker.history(period="1d")
-                if not hist.empty:
-                    prev_close = float(hist['Close'].iloc[-1])
-                
-            if prev_close:
-                lower_circuit = prev_close * 0.90  # 10% limit
-                _circuit_cache[symbol] = lower_circuit
-        except Exception as e:
-            logger.debug("Could not determine circuit limit from yfinance for %s: %s", symbol, e)
-            _circuit_cache[symbol] = lower_circuit  # Cache the fallback to avoid repeating error calls
+        lower_circuit = round(ltp * 0.90, 2)
+        _circuit_cache[symbol] = lower_circuit
 
     # Proximity calculation
-    circuit_distance_pct = ((ltp - lower_circuit) / ltp) * 100
+    circuit_distance_pct = ((ltp - lower_circuit) / ltp) * 100 if ltp > 0 else 10.0
     
     # Simulate Order Book (Market Depth) based on proximity
-    # If the price drops close to the circuit (<1.2%), simulate buyer collapse
     if circuit_distance_pct < 1.2:
-        # Sellers outnumber buyers 6:1 to trigger EMERGENCY_EXIT
         bids = [{"price": lower_circuit, "quantity": 100}]
         asks = [{"price": ltp, "quantity": 600}]
     else:
-        # Normal healthy market depth
-        bids = [{"price": ltp * 0.99, "quantity": 800}]
-        asks = [{"price": ltp * 1.01, "quantity": 400}]
+        bids = [{"price": round(ltp * 0.99, 2), "quantity": 800}]
+        asks = [{"price": round(ltp * 1.01, 2), "quantity": 400}]
         
     market_depth = {"bids": bids, "asks": asks}
     return market_depth, lower_circuit

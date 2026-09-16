@@ -1110,7 +1110,7 @@ async def analyze_stocks_stream(req: AnalyzeRequest):
 
 class PaperOrderRequest(BaseModel):
     symbol:       str
-    company_name: str
+    company_name: Optional[str] = ""
     action:       str          # BUY or SELL
     entry_price:  float
     quantity:     int
