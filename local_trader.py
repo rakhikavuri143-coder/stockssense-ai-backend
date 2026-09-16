@@ -42,6 +42,19 @@ except Exception as _e:
     DEEP_AI_AVAILABLE = False
     print(f"⚠️ Deep AI Brain not available (using Fast Mode): {_e}")
 
+try:
+    from backend.database import SessionLocal, PaperTrade, LiveTrade, get_weekly_summary, get_monthly_summary
+    DB_AVAILABLE = True
+    print("✅ Database (Paper/Live Trading Engine) loaded successfully!")
+except Exception as _dbe:
+    DB_AVAILABLE = False
+    print(f"⚠️ Database module load error: {_dbe}")
+
+try:
+    from backend.telegram_alerts import send_telegram_message
+except Exception:
+    def send_telegram_message(msg, parse_mode="HTML"): pass
+
 ANGEL_TOKENS_MAP = {
     "RELIANCE.NS": "2885",  "TCS.NS": "11536",  "HDFCBANK.NS": "1333",
     "ICICIBANK.NS": "4963", "INFY.NS": "1594",  "SBIN.NS": "3045",
@@ -417,7 +430,8 @@ config = {
     "client_code": "AACL535586",
     "password": "",
     "api_key": "",
-    "totp_secret": ""
+    "totp_secret": "",
+    "trading_mode": "paper"
 }
 
 if os.path.exists(CONFIG_FILE):
@@ -436,6 +450,159 @@ def save_config(new_config: dict):
     config.update(new_config)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def save_paper_trade_db(symbol: str, action: str, qty: int, price: float, sl: float = 0, t1: float = 0, t2: float = 0, company_name: str = ""):
+    if not DB_AVAILABLE:
+        return None
+    try:
+        db = SessionLocal()
+        pt = PaperTrade(
+            symbol=symbol,
+            company_name=company_name or symbol,
+            action=action.upper(),
+            entry_price=float(price or 0),
+            quantity=int(qty or 1),
+            stop_loss=float(sl or 0),
+            target1=float(t1 or 0),
+            target2=float(t2 or 0),
+            status="OPEN"
+        )
+        db.add(pt)
+        db.commit()
+        db.refresh(pt)
+        tid = pt.id
+        db.close()
+        return tid
+    except Exception as e:
+        print(f"Error saving paper trade to DB: {e}")
+        return None
+
+
+def save_live_trade_db(symbol: str, action: str, qty: int, price: float, sl: float = 0, t1: float = 0, t2: float = 0, order_id: str = "", company_name: str = ""):
+    if not DB_AVAILABLE:
+        return None
+    try:
+        db = SessionLocal()
+        lt = LiveTrade(
+            symbol=symbol,
+            company_name=company_name or symbol,
+            action=action.upper(),
+            entry_price=float(price or 0),
+            quantity=int(qty or 1),
+            stop_loss=float(sl or 0),
+            target1=float(t1 or 0),
+            target2=float(t2 or 0),
+            status="OPEN",
+            order_id=str(order_id or "")
+        )
+        db.add(lt)
+        db.commit()
+        db.refresh(lt)
+        tid = lt.id
+        db.close()
+        return tid
+    except Exception as e:
+        print(f"Error saving live trade to DB: {e}")
+        return None
+
+
+def get_trades_list(mode: str = "paper", limit: int = 50):
+    if not DB_AVAILABLE:
+        return []
+    try:
+        db = SessionLocal()
+        model = LiveTrade if mode == "live" else PaperTrade
+        trades = db.query(model).order_by(model.id.desc()).limit(limit).all()
+        res = []
+        for t in trades:
+            res.append({
+                "id": t.id,
+                "symbol": t.symbol,
+                "company_name": t.company_name or t.symbol,
+                "action": t.action,
+                "entry_price": t.entry_price or 0.0,
+                "quantity": t.quantity or 1,
+                "exit_price": t.exit_price,
+                "stop_loss": t.stop_loss or 0.0,
+                "target1": t.target1 or 0.0,
+                "target2": t.target2 or 0.0,
+                "status": t.status or "OPEN",
+                "pnl": t.pnl or 0.0,
+                "pnl_percent": t.pnl_percent or 0.0,
+                "opened_at": t.opened_at.strftime("%Y-%m-%d %H:%M") if t.opened_at else "",
+                "closed_at": t.closed_at.strftime("%Y-%m-%d %H:%M") if t.closed_at else "",
+                "order_id": getattr(t, "order_id", None)
+            })
+        db.close()
+        return res
+    except Exception as e:
+        print(f"Error fetching trades list: {e}")
+        return []
+
+
+def get_paper_balance_calc():
+    """Calculate virtual paper balance starting at ₹1,00,000 + paper trade P&L."""
+    if not DB_AVAILABLE:
+        return 100000.0
+    try:
+        db = SessionLocal()
+        trades = db.query(PaperTrade).all()
+        total_pnl = sum(t.pnl or 0.0 for t in trades)
+        db.close()
+        return round(100000.0 + total_pnl, 2)
+    except Exception:
+        return 100000.0
+
+
+def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mode="paper"):
+    current_mode = mode or config.get("trading_mode", "paper")
+    clean_sym = symbol.upper().strip().replace(".NS", "-EQ")
+    if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
+        clean_sym = f"{clean_sym}-EQ"
+    
+    q = max(1, int(qty or 1))
+    p = float(price or 0)
+    sl_val = float(sl or 0)
+    t1_val = float(t1 or 0)
+    t2_val = float(t2 or 0)
+    import time
+
+    if current_mode == "paper":
+        tid = save_paper_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val)
+        register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
+        tg_msg = (
+            f"📝 <b>PAPER TRADE EXECUTED</b>\n"
+            f"<b>Symbol:</b> {clean_sym}\n"
+            f"<b>Action:</b> {action.upper()}\n"
+            f"<b>Qty:</b> {q}\n"
+            f"<b>Entry Price:</b> ₹{p:.2f}\n"
+            f"<b>SL:</b> ₹{sl_val:.2f} | <b>T1:</b> ₹{t1_val:.2f}"
+        )
+        send_telegram_message(tg_msg)
+        return {
+            "success": True,
+            "mode": "paper",
+            "order_id": f"PAPER-{tid or int(time.time())}",
+            "message": f"🎉 PAPER TRADE PLACED SUCCESSFULLY!\nSymbol: {clean_sym}\nAction: {action.upper()}\nQty: {q}\nPrice: ₹{p:.2f}"
+        }
+    else:
+        # Live order execution via Angel One SmartAPI
+        res = place_order(clean_sym, symbol_token, action, q, p)
+        if res.get("success"):
+            order_id = res.get("order_id", "")
+            save_live_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val, order_id=order_id)
+            register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
+            tg_msg = (
+                f"💼 <b>LIVE ORDER EXECUTED (ANGEL ONE)</b>\n"
+                f"<b>Symbol:</b> {clean_sym}\n"
+                f"<b>Action:</b> {action.upper()}\n"
+                f"<b>Qty:</b> {q}\n"
+                f"<b>Entry Price:</b> ₹{p:.2f}\n"
+                f"<b>Order ID:</b> {order_id}"
+            )
+            send_telegram_message(tg_msg)
+        return res
 
 
 def get_my_ip():
@@ -754,6 +921,59 @@ def _local_sl_monitor_thread():
     while True:
         try:
             time.sleep(5)
+            # 1. Paper Trades Monitor (Runs even if Angel One is not logged in)
+            if DB_AVAILABLE:
+                try:
+                    db = SessionLocal()
+                    open_pts = db.query(PaperTrade).filter(PaperTrade.status == "OPEN").all()
+                    for pt in open_pts:
+                        sym = pt.symbol
+                        yf_sym = sym.replace("-EQ", ".NS").replace("-BE", ".NS")
+                        cmp_price = 0.0
+                        try:
+                            ticker = yf.Ticker(yf_sym)
+                            fi = getattr(ticker, "fast_info", None)
+                            if fi and getattr(fi, "last_price", None) and float(fi.last_price) > 0:
+                                cmp_price = float(fi.last_price)
+                        except Exception:
+                            pass
+
+                        if cmp_price > 0:
+                            q = pt.quantity or 1
+                            ep = pt.entry_price or 0.0
+                            act = (pt.action or "BUY").upper()
+                            pnl = round((cmp_price - ep) * q if act == "BUY" else (ep - cmp_price) * q, 2)
+                            pnl_pct = round((pnl / (ep * q)) * 100, 2) if (ep * q) > 0 else 0.0
+
+                            sl_price = pt.stop_loss or 0.0
+                            t1_price = pt.target1 or 0.0
+
+                            # SL Hit check
+                            if (act == "BUY" and sl_price > 0 and cmp_price <= sl_price) or \
+                               (act == "SELL" and sl_price > 0 and cmp_price >= sl_price):
+                                pt.status = "SL_HIT"
+                                pt.exit_price = cmp_price
+                                pt.pnl = pnl
+                                pt.pnl_percent = pnl_pct
+                                pt.closed_at = datetime.utcnow()
+                                db.commit()
+                                send_telegram_message(f"🛑 <b>PAPER TRADE SL HIT</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nP&L: ₹{pnl:.2f}")
+
+                            # Target 1 Hit check
+                            elif (act == "BUY" and t1_price > 0 and cmp_price >= t1_price) or \
+                                 (act == "SELL" and t1_price > 0 and cmp_price <= t1_price):
+                                pt.status = "T1_HIT"
+                                pt.exit_price = cmp_price
+                                pt.pnl = pnl
+                                pt.pnl_percent = pnl_pct
+                                pt.closed_at = datetime.utcnow()
+                                db.commit()
+                                send_telegram_message(f"🎯 <b>PAPER TRADE TARGET HIT</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nP&L: +₹{pnl:.2f}")
+                    db.close()
+                except Exception as _pe:
+                    pass
+
+            # 2. Live Trades Monitor (Requires Angel One login)
             if not auth_session.get("jwtToken"):
                 continue
 
@@ -1175,18 +1395,24 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span>● Angel One SmartAPI Bridge</span>
                 </p>
             </div>
-            <div id="conn-badge" class="status-badge status-disconnected">● Connecting...</div>
+            <div style="display:flex; align-items:center; gap:12px;">
+                <div id="mode-switcher-bar" style="background:#090f1d; border:1px solid var(--border); border-radius:30px; padding:4px; display:inline-flex; align-items:center; gap:4px;">
+                    <button id="hdr-mode-paper" onclick="switchMode('paper')" style="padding:6px 14px; border-radius:20px; font-size:12px; font-weight:800; border:none; cursor:pointer; background:#2563eb; color:#fff;">📝 PAPER MODE</button>
+                    <button id="hdr-mode-live" onclick="switchMode('live')" style="padding:6px 14px; border-radius:20px; font-size:12px; font-weight:800; border:none; cursor:pointer; background:transparent; color:var(--text-muted);">💼 LIVE MODE</button>
+                </div>
+                <div id="conn-badge" class="status-badge status-disconnected">● Connecting...</div>
+            </div>
         </div>
 
         <!-- Real-Time Account Bar -->
         <div class="stats-bar">
             <div class="stat-card">
-                <div class="stat-label">Angel One Balance</div>
-                <div class="stat-val" id="st_bal" style="color:#60a5fa;">₹0.00</div>
+                <div class="stat-label" id="lbl_bal_type">Paper Trading Balance</div>
+                <div class="stat-val" id="st_bal" style="color:#60a5fa;">₹100,000.00</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">5X MIS Buying Power</div>
-                <div class="stat-val" id="st_power" style="color:#34d399;">₹0.00</div>
+                <div class="stat-val" id="st_power" style="color:#34d399;">₹500,000.00</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Daily Loss Guard (SL)</div>
@@ -1203,7 +1429,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <div>
                 <!-- Quick Order Placement -->
                 <div class="card">
-                    <div class="card-title">📝 Quick Manual Live Order</div>
+                    <div class="card-title">📝 Quick Manual <span id="m-order-mode-lbl" style="color:#60a5fa;">Paper</span> Order</div>
                     <div style="display:flex; gap:10px;">
                         <div style="flex:2;">
                             <label>Stock Symbol</label>
@@ -1323,12 +1549,59 @@ HTML_PAGE = """<!DOCTYPE html>
                         </p>
                     </div>
                 </div>
+
+                <!-- Trade History & Journal Card -->
+                <div class="card">
+                    <div class="card-title">
+                        <span id="journal-header-title">📝 Paper Trading Journal & History</span>
+                        <div style="display:flex; gap:8px;">
+                            <button id="jtab-paper" onclick="loadJournal('paper')" class="btn" style="width:auto; padding:6px 12px; font-size:11px; background:#2563eb; color:#fff;">Paper Trades</button>
+                            <button id="jtab-live" onclick="loadJournal('live')" class="btn" style="width:auto; padding:6px 12px; font-size:11px; background:#090f1d; color:var(--text-muted); border:1px solid var(--border);">Live Trades</button>
+                        </div>
+                    </div>
+                    
+                    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-bottom:16px;">
+                        <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Weekly Net P&L</div>
+                            <div id="j_weekly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
+                        </div>
+                        <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Monthly Net P&L</div>
+                            <div id="j_monthly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
+                        </div>
+                        <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                            <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Total Trades</div>
+                            <div id="j_total_trades" style="font-size:18px; font-weight:900; color:#60a5fa; margin-top:4px;">0</div>
+                        </div>
+                    </div>
+
+                    <div style="overflow-x:auto;">
+                        <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left;">
+                            <thead>
+                                <tr style="border-bottom:1px solid var(--border); color:var(--text-muted); font-weight:700;">
+                                    <th style="padding:10px;">Symbol</th>
+                                    <th style="padding:10px;">Action</th>
+                                    <th style="padding:10px;">Qty</th>
+                                    <th style="padding:10px;">Entry (₹)</th>
+                                    <th style="padding:10px;">SL / Target</th>
+                                    <th style="padding:10px;">Status</th>
+                                    <th style="padding:10px;">P&L (₹)</th>
+                                    <th style="padding:10px;">Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="journal-trades-body">
+                                <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">Loading trade history...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
 <script>
-let currentBalance = 500;
+let currentTradingMode = 'paper';
+let currentBalance = 100000;
 
 async function init() {
     try {
@@ -1340,11 +1613,47 @@ async function init() {
         document.getElementById('cfg_totp').value = d.totp_secret || '';
         if (d.ip) document.getElementById('display-ip').textContent = d.ip;
 
+        currentTradingMode = d.trading_mode || 'paper';
+        switchMode(currentTradingMode, false);
+
         if (d.password && d.api_key && d.totp_secret) {
             await autoConnect();
         }
     } catch(e) { console.log(e); }
     loadSignals();
+    loadJournal(currentTradingMode);
+}
+
+async function switchMode(mode, save = true) {
+    currentTradingMode = mode;
+    const btnPaper = document.getElementById('hdr-mode-paper');
+    const btnLive = document.getElementById('hdr-mode-live');
+    const lblBalType = document.getElementById('lbl_bal_type');
+    const lblOrderMode = document.getElementById('m-order-mode-lbl');
+
+    if (mode === 'paper') {
+        if (btnPaper) { btnPaper.style.background = '#2563eb'; btnPaper.style.color = '#fff'; }
+        if (btnLive) { btnLive.style.background = 'transparent'; btnLive.style.color = 'var(--text-muted)'; }
+        if (lblBalType) lblBalType.textContent = 'Paper Trading Balance';
+        if (lblOrderMode) { lblOrderMode.textContent = 'Paper'; lblOrderMode.style.color = '#60a5fa'; }
+    } else {
+        if (btnLive) { btnLive.style.background = '#10b981'; btnLive.style.color = '#000'; }
+        if (btnPaper) { btnPaper.style.background = 'transparent'; btnPaper.style.color = 'var(--text-muted)'; }
+        if (lblBalType) lblBalType.textContent = 'Angel One RMS Balance';
+        if (lblOrderMode) { lblOrderMode.textContent = 'Live'; lblOrderMode.style.color = '#10b981'; }
+    }
+
+    if (save) {
+        try {
+            await fetch('/api/set-trading-mode', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({mode: mode})
+            });
+        } catch(e) {}
+    }
+    loadBalance();
+    loadJournal(mode);
 }
 
 async function autoConnect() {
@@ -1396,14 +1705,89 @@ async function saveAndLogin() {
 
 async function loadBalance() {
     try {
-        const r = await fetch('/api/balance');
+        const r = await fetch(`/api/balance?mode=${currentTradingMode}`);
         const d = await r.json();
         if (d.connected) {
-            currentBalance = d.balance || 500;
-            document.getElementById('st_bal').textContent = '₹' + currentBalance.toFixed(2);
-            document.getElementById('st_power').textContent = '₹' + (currentBalance * 5).toFixed(2);
+            currentBalance = d.balance || 0;
+            document.getElementById('st_bal').textContent = '₹' + currentBalance.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('st_power').textContent = '₹' + (currentBalance * 5).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         }
     } catch(e) { console.log(e); }
+}
+
+async function loadJournal(mode) {
+    const jheader = document.getElementById('journal-header-title');
+    const jtabPaper = document.getElementById('jtab-paper');
+    const jtabLive = document.getElementById('jtab-live');
+    const tbody = document.getElementById('journal-trades-body');
+
+    if (jheader) jheader.textContent = mode === 'paper' ? '📝 Paper Trading Journal & History' : '💼 Live Trading Journal & History';
+    if (jtabPaper) {
+        jtabPaper.style.background = mode === 'paper' ? '#2563eb' : '#090f1d';
+        jtabPaper.style.color = mode === 'paper' ? '#fff' : 'var(--text-muted)';
+    }
+    if (jtabLive) {
+        jtabLive.style.background = mode === 'live' ? '#10b981' : '#090f1d';
+        jtabLive.style.color = mode === 'live' ? '#000' : 'var(--text-muted)';
+    }
+
+    // Load stats summary
+    try {
+        const rSum = await fetch(`/api/get-journal-summary?mode=${mode}`);
+        const dSum = await rSum.json();
+        const w = dSum.weekly || {};
+        const mn = dSum.monthly || {};
+        const wPnl = parseFloat(w.net_pnl || 0);
+        const mPnl = parseFloat(mn.net_pnl || 0);
+        const totalT = parseInt(w.total_trades || 0);
+
+        const elW = document.getElementById('j_weekly_pnl');
+        const elM = document.getElementById('j_monthly_pnl');
+        const elT = document.getElementById('j_total_trades');
+
+        if (elW) {
+            elW.textContent = (wPnl >= 0 ? '+' : '') + '₹' + wPnl.toFixed(2);
+            elW.style.color = wPnl >= 0 ? '#10b981' : '#ef4444';
+        }
+        if (elM) {
+            elM.textContent = (mPnl >= 0 ? '+' : '') + '₹' + mPnl.toFixed(2);
+            elM.style.color = mPnl >= 0 ? '#10b981' : '#ef4444';
+        }
+        if (elT) elT.textContent = totalT;
+    } catch(e) {}
+
+    // Load trades list
+    try {
+        const rTrd = await fetch(`/api/get-trades?mode=${mode}`);
+        const dTrd = await rTrd.json();
+        const trades = dTrd.trades || [];
+
+        if (!tbody) return;
+        if (!trades.length) {
+            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">No ${mode} trades recorded yet.</td></tr>`;
+            return;
+        }
+
+        let html = '';
+        trades.forEach(t => {
+            const pnl = parseFloat(t.pnl || 0);
+            const isBuy = t.action === 'BUY';
+            const stColor = t.status === 'CLOSED' || t.status === 'T1_HIT' ? '#10b981' : t.status === 'SL_HIT' ? '#ef4444' : '#f59e0b';
+            html += `<tr style="border-bottom:1px solid var(--border);">
+                <td style="padding:10px; font-weight:800;">${t.symbol}</td>
+                <td style="padding:10px;"><span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}">${t.action}</span></td>
+                <td style="padding:10px;">${t.quantity}</td>
+                <td style="padding:10px;">₹${parseFloat(t.entry_price).toFixed(2)}</td>
+                <td style="padding:10px; font-size:11px; color:var(--text-muted);">SL: ₹${parseFloat(t.stop_loss).toFixed(2)} | T1: ₹${parseFloat(t.target1).toFixed(2)}</td>
+                <td style="padding:10px;"><span style="color:${stColor}; font-weight:700;">${t.status}</span></td>
+                <td style="padding:10px; font-weight:800; color:${pnl >= 0 ? '#10b981' : '#ef4444'};">${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(2)}</td>
+                <td style="padding:10px; font-size:11px; color:var(--text-muted);">${t.opened_at}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    } catch(e) {
+        if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#ef4444;">Failed to load trade history.</td></tr>';
+    }
 }
 
 async function loadPositions() {
@@ -1830,9 +2214,15 @@ function openTradeModal(sym, tok, action, qty, price, target1, target2, sl) {
     document.getElementById('modal_tok').value = tok;
     document.getElementById('modal_action').textContent = action;
     document.getElementById('modal_action').className = 'badge ' + (action === 'BUY' ? 'badge-buy' : 'badge-sell');
-    document.getElementById('modal_btn_submit').className = 'btn ' + (action === 'BUY' ? 'btn-buy' : 'btn-sell');
-    document.getElementById('modal_btn_submit').textContent = `⚡ CONFIRM LIVE ${action} (ANGEL ONE)`;
     
+    const submitBtn = document.getElementById('modal_btn_submit');
+    submitBtn.className = 'btn ' + (action === 'BUY' ? 'btn-buy' : 'btn-sell');
+    if (currentTradingMode === 'paper') {
+        submitBtn.textContent = `⚡ CONFIRM PAPER TRADE (${action})`;
+    } else {
+        submitBtn.textContent = `⚡ CONFIRM LIVE ORDER (ANGEL ONE)`;
+    }
+
     document.getElementById('modal_qty').value = qty;
     document.getElementById('modal_price').value = parseFloat(price).toFixed(2);
     
@@ -1904,18 +2294,29 @@ async function executeModalOrder() {
     const alertBox = document.getElementById('modal-alert');
     alertBox.style.display = 'block';
     alertBox.className = 'alert-box';
-    alertBox.textContent = `⏳ Placing ${action} order for ${sym} (5X Intraday MIS) on Angel One...`;
+    alertBox.textContent = currentTradingMode === 'paper' ? `⏳ Placing Virtual Paper Trade for ${sym}...` : `⏳ Placing ${action} order for ${sym} (5X Intraday MIS) on Angel One...`;
 
     const r = await fetch('/api/place-order', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({symbol: sym, token: tok, action: action, qty: qty, price: price, stoploss: sl, target1: t1, target2: t2})
+        body: JSON.stringify({
+            symbol: sym, 
+            token: tok, 
+            action: action, 
+            qty: qty, 
+            price: price, 
+            stoploss: sl, 
+            target1: t1, 
+            target2: t2,
+            mode: currentTradingMode
+        })
     });
     const d = await r.json();
     alertBox.textContent = d.message;
     alertBox.className = 'alert-box ' + (d.success ? 'alert-ok' : 'alert-err');
     loadBalance();
     loadPositions();
+    loadJournal(currentTradingMode);
     if (typeof loadOrders === 'function') loadOrders();
 }
 
@@ -2080,11 +2481,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/ai-status":
             self._send_json({"deep_ai_available": DEEP_AI_AVAILABLE})
         elif path == "/api/balance":
-            self._send_json(get_live_balance())
+            m = query.get("mode", [config.get("trading_mode", "paper")])[0]
+            if m == "paper":
+                pb = get_paper_balance_calc()
+                self._send_json({"balance": pb, "buying_power": pb * 5.0, "connected": True, "mode": "paper"})
+            else:
+                self._send_json(get_live_balance())
         elif path == "/api/positions":
             self._send_json(get_live_positions())
         elif path == "/api/orders":
             self._send_json(get_order_book())
+        elif path == "/api/get-trades":
+            m = query.get("mode", ["paper"])[0]
+            self._send_json({"trades": get_trades_list(m), "mode": m})
+        elif path == "/api/get-journal-summary":
+            m = query.get("mode", ["paper"])[0]
+            if DB_AVAILABLE:
+                db = SessionLocal()
+                w = get_weekly_summary(db, m)
+                mn = get_monthly_summary(db, m)
+                db.close()
+                self._send_json({"weekly": w, "monthly": mn, "mode": m})
+            else:
+                self._send_json({"weekly": {}, "monthly": {}, "mode": m})
         else:
             self.send_error(404)
 
@@ -2099,6 +2518,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/login":
             res = login_smartapi()
             self._send_json(res)
+        elif self.path == "/api/set-trading-mode":
+            m = body.get("mode", "paper")
+            config["trading_mode"] = m
+            save_config(config)
+            self._send_json({"success": True, "trading_mode": m})
         elif self.path == "/api/place-order":
             sym = body.get("symbol", "")
             tok = body.get("token", "")
@@ -2108,25 +2532,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             sl  = body.get("stoploss") or body.get("sl") or 0
             t1  = body.get("target1") or body.get("t1") or 0
             t2  = body.get("target2") or body.get("t2") or 0
+            mode = body.get("mode") or config.get("trading_mode", "paper")
 
-            res = place_order(
+            res = execute_trade(
                 symbol=sym,
                 symbol_token=tok,
                 action=act,
                 qty=qty,
-                price=prc
+                price=prc,
+                sl=sl,
+                t1=t1,
+                t2=t2,
+                mode=mode
             )
-            if res.get("success"):
-                register_local_trade_guard(
-                    symbol=sym,
-                    symbol_token=tok,
-                    action=act,
-                    qty=qty,
-                    entry_price=prc,
-                    stop_loss=sl,
-                    target1=t1,
-                    target2=t2
-                )
             self._send_json(res)
         else:
             self.send_error(404)
