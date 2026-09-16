@@ -366,7 +366,10 @@ def close_paper_position(
     trade.pnl_percent = pnl_pct
     trade.status      = exit_reason
     trade.closed_at   = datetime.utcnow()
-    db.commit()
+    # Clean up internal trade notification & peak caches
+    _t1_notified_trades.discard(trade.id)
+    _peak_prices.pop(trade.id, None)
+    _peak_pnl.pop(trade.id, None)
 
     new_balance, _ = sync_state(db)
 
@@ -396,13 +399,14 @@ def close_paper_position(
 
 _peak_prices: dict[int, float] = {}
 _peak_pnl:    dict[int, float] = {}   # Tracks peak P&L (₹) per trade for Nifty trailing stop
+_t1_notified_trades: set[int] = set() # Track trade IDs that sent Telegram T1 alert
 
 def check_auto_exits(db: Session, live_prices: dict[str, float]):
     """
     Auto-check open positions against live prices.
     Triggers Target 1, Target 2, Stop Loss exits, EOD 3:25 PM Auto-Squareoff, or Trailing Peak Profit Lock automatically.
     """
-    global _peak_prices, _peak_pnl
+    global _peak_prices, _peak_pnl, _t1_notified_trades
     _, open_positions = sync_state(db)
     results = []
     from datetime import timezone, timedelta
@@ -571,9 +575,9 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
             elif price >= pos["target1"] or current_pnl_buy >= t1_threshold:
-                # Notify Telegram once when T1 is reached, but DO NOT force-close position. Let Dynamic Trailing Engine trail profit!
-                if not pos.get("_t1_notified"):
-                    pos["_t1_notified"] = True
+                # Notify Telegram ONCE per trade when T1 is reached (persisted via _t1_notified_trades set)
+                if trade_id not in _t1_notified_trades:
+                    _t1_notified_trades.add(trade_id)
                     try:
                         from backend.telegram_alerts import alert_profit_target_approaching
                         alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_buy, t1_threshold)
@@ -676,9 +680,9 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
             elif price <= pos["target1"] or current_pnl_sell >= t1_threshold:
-                # Notify Telegram once when T1 is reached, but DO NOT force-close position. Let Dynamic Trailing Engine trail profit!
-                if not pos.get("_t1_notified"):
-                    pos["_t1_notified"] = True
+                # Notify Telegram ONCE per trade when T1 is reached (persisted via _t1_notified_trades set)
+                if trade_id not in _t1_notified_trades:
+                    _t1_notified_trades.add(trade_id)
                     try:
                         from backend.telegram_alerts import alert_profit_target_approaching
                         alert_profit_target_approaching(symbol, pos["action"], entry_p, price, pos["quantity"], current_pnl_sell, t1_threshold)

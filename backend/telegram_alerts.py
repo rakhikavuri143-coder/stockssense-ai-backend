@@ -32,11 +32,12 @@ def _ist_now() -> str:
     return datetime.now(IST).strftime("%I:%M %p IST")
 
 
-def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
-    """Send a message via Telegram Bot API (non-blocking, fire-and-forget)."""
+import threading
+
+def _send_telegram_sync(text: str, parse_mode: str = "HTML") -> bool:
+    """Internal synchronous sender run inside a background thread."""
     bot_token, chat_id = _get_credentials()
     if not bot_token or not chat_id:
-        logger.warning("Telegram credentials not set. Skipping alert.")
         return False
 
     try:
@@ -48,7 +49,7 @@ def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
         }
         data = urllib.parse.urlencode(payload).encode("utf-8")
         req  = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:
             result = json.loads(resp.read())
             if result.get("ok"):
                 logger.info("Telegram alert sent successfully.")
@@ -58,6 +59,17 @@ def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
                 return False
     except Exception as e:
         logger.error("Telegram send failed: %s", e)
+        return False
+
+
+def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
+    """Send a message via Telegram Bot API asynchronously (0ms blocking, fire-and-forget)."""
+    try:
+        thread = threading.Thread(target=_send_telegram_sync, args=(text, parse_mode), daemon=True)
+        thread.start()
+        return True
+    except Exception as e:
+        logger.error("Failed to spawn Telegram alert thread: %s", e)
         return False
 
 

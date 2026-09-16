@@ -2073,7 +2073,10 @@ async function submitManualTrade() {
   } catch (e) {
     clearTimeout(mtTimeoutId);
     if (e.name === 'AbortError') {
-      showMtError('⚠️ Order request timed out (20s). Please check Angel One app to confirm if order was placed, then try again.');
+      const timeoutMsg = currentMode === 'live'
+        ? '⚠️ Order request timed out (20s). Please check Angel One app to confirm if order was placed, then try again.'
+        : '⚠️ Paper order request timed out (20s). Please check Paper Trading tab to see if order was placed, then try again.';
+      showMtError(timeoutMsg);
     } else {
       showMtError('Network error: ' + e.message);
     }
