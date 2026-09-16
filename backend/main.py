@@ -353,6 +353,24 @@ async def get_ram_status():
     }
 
 
+@app.get("/api/system/ip")
+async def get_system_ip():
+    """Returns the live outbound public IP of the server."""
+    from backend.broker_angelone import get_server_public_ip
+    import httpx
+    live_ip = "Unknown"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get("https://api.ipify.org?format=json")
+            live_ip = resp.json().get("ip", "Unknown")
+    except Exception:
+        live_ip = get_server_public_ip()
+    return {
+        "outbound_public_ip": live_ip,
+        "angelone_header_ip": get_server_public_ip()
+    }
+
+
 @app.post("/api/admin/clear-ram")
 async def clear_ram_endpoint():
     """Manually trigger aggressive memory cleanup, cache purge, and glibc malloc_trim."""
