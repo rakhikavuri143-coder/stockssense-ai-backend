@@ -223,7 +223,7 @@ def alert_profit_target_approaching(symbol: str, action: str, entry_price: float
     pnl_emoji = "🟢" if current_pnl > 0 else "🔴"
 
     msg = (
-        f"<b>🎯💰 PROFIT TARGET HIT!</b>\n"
+        f"<b>🎯💰 T1 TARGET REACHED!</b>\n"
         f"<i>{_ist_now()}</i>\n"
         f"{'=' * 30}\n"
         f"<b>{symbol.replace('.NS', '')}</b>\n"
@@ -233,7 +233,7 @@ def alert_profit_target_approaching(symbol: str, action: str, entry_price: float
         f"<b>{pnl_emoji} Profit: ₹{current_pnl:+,.2f}</b>\n"
         f"Target: ₹{threshold:,.0f} ✅ REACHED!\n"
         f"{'=' * 30}\n"
-        f"⚡ <i>Auto-closing trade now...</i>"
+        f"⚡ <i>T1 Target Reached! Trailing SL & Profit Lock active for T2.</i>"
     )
     send_telegram_message(msg)
 

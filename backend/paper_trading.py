@@ -379,6 +379,8 @@ def close_paper_position(
     trade.pnl_percent = pnl_pct
     trade.status      = exit_reason
     trade.closed_at   = datetime.utcnow()
+    db.commit()
+    
     # Clean up internal trade notification & peak caches
     _t1_notified_trades.discard(trade.id)
     _peak_prices.pop(trade.id, None)
