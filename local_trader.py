@@ -555,7 +555,7 @@ def get_paper_balance_calc():
         return 100000.0
 
 
-def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mode="paper"):
+def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mode="paper", order_type="MARKET"):
     current_mode = mode or config.get("trading_mode", "paper")
     clean_sym = symbol.upper().strip().replace(".NS", "-EQ")
     if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
@@ -587,8 +587,8 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             "message": f"🎉 PAPER TRADE PLACED SUCCESSFULLY!\nSymbol: {clean_sym}\nAction: {action.upper()}\nQty: {q}\nPrice: ₹{p:.2f}"
         }
     else:
-        # Live order execution via Angel One SmartAPI
-        res = place_order(clean_sym, symbol_token, action, q, p)
+        # Live order execution via Angel One SmartAPI (MARKET order type by default for instant fill)
+        res = place_order(clean_sym, symbol_token, action, q, p, order_type=order_type)
         if res.get("success"):
             order_id = res.get("order_id", "")
             save_live_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val, order_id=order_id)
@@ -798,7 +798,7 @@ def get_order_book():
     return {"orders": [], "connected": False, "error": res.get("message", "Failed to fetch order book")}
 
 
-def place_order(symbol, symbol_token, action, qty, price, exchange="NSE", order_type="LIMIT", product="INTRADAY"):
+def place_order(symbol, symbol_token, action, qty, price=0, exchange="NSE", order_type="MARKET", product="INTRADAY"):
     global auth_session
     if not auth_session.get("jwtToken"):
         lres = login_smartapi()
@@ -824,7 +824,7 @@ def place_order(symbol, symbol_token, action, qty, price, exchange="NSE", order_
         return {"success": False, "message": f"❌ Could not find Angel One Symbol Token for '{symbol}'. Please select a stock from the Scanner or enter valid token."}
 
     order_p = float(price or 0)
-    actual_order_type = "MARKET" if order_p <= 0 else order_type.upper()
+    actual_order_type = order_type.upper() if order_type else "MARKET"
 
     my_ip = auth_session.get("my_ip", get_my_ip())
     headers = {
@@ -2533,6 +2533,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             t1  = body.get("target1") or body.get("t1") or 0
             t2  = body.get("target2") or body.get("t2") or 0
             mode = body.get("mode") or config.get("trading_mode", "paper")
+            order_type = body.get("order_type", "MARKET")
 
             res = execute_trade(
                 symbol=sym,
@@ -2543,7 +2544,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 sl=sl,
                 t1=t1,
                 t2=t2,
-                mode=mode
+                mode=mode,
+                order_type=order_type
             )
             self._send_json(res)
         else:

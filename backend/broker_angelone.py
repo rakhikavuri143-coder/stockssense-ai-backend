@@ -147,9 +147,9 @@ def place_smartapi_order(
     symbol_token: str,
     transaction_type: str,  # BUY or SELL
     quantity: int,
-    price: float,
-    order_type: str = "LIMIT",  # LIMIT or MARKET
-    exchange: str = "NSE",      # NSE or BSE
+    price: float = 0.0,
+    order_type: str = "MARKET",  # MARKET or LIMIT
+    exchange: str = "NSE",       # NSE or BSE
     product_type: str = "INTRADAY"  # INTRADAY, DELIVERY, CARRYFORWARD
 ) -> Dict:
     """
