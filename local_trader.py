@@ -16,6 +16,9 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+import time
+import datetime
+from datetime import datetime, timezone, timedelta
 import json
 import webbrowser
 import http.server
@@ -724,15 +727,26 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
         res = place_order(clean_sym, symbol_token, action, q, p, order_type=order_type)
         if res.get("success"):
             order_id = res.get("order_id", "")
-            save_live_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val, order_id=order_id)
-            register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
-            
+            try:
+                save_live_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val, order_id=order_id)
+            except Exception as e:
+                print(f"⚠️ Live trade DB save error: {e}")
+
             # 🛡️ Instant Exchange Stop-Loss Order Placement in Angel One Order Book
             sl_res = {}
             if sl_val > 0:
-                sl_res = place_smartapi_sl_order(clean_sym, symbol_token, action, q, sl_val)
+                try:
+                    sl_res = place_smartapi_sl_order(clean_sym, symbol_token, action, q, sl_val)
+                except Exception as e:
+                    print(f"⚠️ SL order placement exception: {e}")
+                    sl_res = {"success": False, "message": str(e)}
+
+            try:
+                register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
                 if sl_res.get("sl_order_id") and clean_sym in LOCAL_SL_TRACKER:
                     LOCAL_SL_TRACKER[clean_sym]["sl_order_id"] = sl_res["sl_order_id"]
+            except Exception as e:
+                print(f"⚠️ Register guard error: {e}")
 
             sl_placed = sl_res.get("success", False)
             sl_oid = sl_res.get("sl_order_id")
@@ -3708,30 +3722,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
             save_config(config)
             self._send_json({"success": True, "trading_mode": m})
         elif self.path == "/api/place-order":
-            sym = body.get("symbol", "")
-            tok = body.get("token", "")
-            act = body.get("action", "BUY")
-            qty = body.get("qty", 1)
-            prc = body.get("price", 0)
-            sl  = body.get("stoploss") or body.get("sl") or 0
-            t1  = body.get("target1") or body.get("t1") or 0
-            t2  = body.get("target2") or body.get("t2") or 0
-            mode = body.get("mode") or config.get("trading_mode", "paper")
-            order_type = body.get("order_type", "MARKET")
+            try:
+                sym = body.get("symbol", "")
+                tok = body.get("token", "")
+                act = body.get("action", "BUY")
+                qty = body.get("qty", 1)
+                prc = body.get("price", 0)
+                sl  = body.get("stoploss") or body.get("sl") or 0
+                t1  = body.get("target1") or body.get("t1") or 0
+                t2  = body.get("target2") or body.get("t2") or 0
+                mode = body.get("mode") or config.get("trading_mode", "paper")
+                order_type = body.get("order_type", "MARKET")
 
-            res = execute_trade(
-                symbol=sym,
-                symbol_token=tok,
-                action=act,
-                qty=qty,
-                price=prc,
-                sl=sl,
-                t1=t1,
-                t2=t2,
-                mode=mode,
-                order_type=order_type
-            )
-            self._send_json(res)
+                res = execute_trade(
+                    symbol=sym,
+                    symbol_token=tok,
+                    action=act,
+                    qty=qty,
+                    price=prc,
+                    sl=sl,
+                    t1=t1,
+                    t2=t2,
+                    mode=mode,
+                    order_type=order_type
+                )
+                self._send_json(res)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send_json({"success": False, "message": f"Server execution error: {e}"})
         else:
             self.send_error(404)
 
