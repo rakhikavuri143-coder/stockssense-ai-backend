@@ -43,6 +43,13 @@ except Exception as _e:
     print(f"⚠️ Deep AI Brain not available (using Fast Mode): {_e}")
 
 try:
+    from backend.indian_stocks import NIFTY50_STOCKS, BUDGET_LOW_PRICED_STOCKS, ALL_STOCKS
+except Exception:
+    NIFTY50_STOCKS = []
+    BUDGET_LOW_PRICED_STOCKS = []
+    ALL_STOCKS = []
+
+try:
     from backend.database import SessionLocal, PaperTrade, LiveTrade, get_weekly_summary, get_monthly_summary
     DB_AVAILABLE = True
     print("✅ Database (Paper/Live Trading Engine) loaded successfully!")
@@ -1384,6 +1391,77 @@ def fetch_signals():
     return run_instant_market_scan("budget")
 
 
+def get_watchlist_data() -> dict:
+    """Return all 69 stocks (Nifty 50 + Budget) with tokens, sectors and category metadata."""
+    stocks_list = []
+    all_s = ALL_STOCKS if ("ALL_STOCKS" in globals() and ALL_STOCKS) else (NIFTY50_STOCKS + BUDGET_LOW_PRICED_STOCKS)
+    budget_syms = set(s["symbol"] for s in BUDGET_LOW_PRICED_STOCKS) if ("BUDGET_LOW_PRICED_STOCKS" in globals() and BUDGET_LOW_PRICED_STOCKS) else set()
+
+    for s in all_s:
+        sym = s["symbol"]
+        base = sym.replace(".NS", "") + "-EQ"
+        tok = ANGEL_TOKENS_MAP.get(sym, STOCK_TOKENS.get(base, get_live_token(base)))
+        is_budget = sym in budget_syms
+        stocks_list.append({
+            "symbol": sym,
+            "base": base,
+            "name": s["name"],
+            "sector": s.get("sector", "General"),
+            "is_budget": is_budget,
+            "tok": tok
+        })
+    return {"stocks": stocks_list, "total": len(stocks_list)}
+
+
+def get_single_stock_price(symbol: str) -> dict:
+    """Fetch live stock price & change via fast Yahoo REST chart endpoint."""
+    sym = symbol.upper().replace("-EQ", "").strip()
+    if not sym.endswith(".NS") and not sym.endswith(".BO"):
+        yahoo_sym = sym + ".NS"
+    else:
+        yahoo_sym = sym
+    base = sym.replace(".NS", "") + "-EQ"
+    tok = ANGEL_TOKENS_MAP.get(yahoo_sym, STOCK_TOKENS.get(base, get_live_token(base)))
+
+    price = 0.0
+    change_pct = 0.0
+    prev_close = 0.0
+    day_high = 0.0
+    day_low = 0.0
+
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=5m&range=1d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, context=ctx, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            result = data.get("chart", {}).get("result", [{}])[0]
+            meta = result.get("meta", {})
+            price = meta.get("regularMarketPrice") or meta.get("previousClose") or 0.0
+            prev_close = meta.get("chartPreviousClose") or meta.get("previousClose") or price
+            day_high = meta.get("regularMarketDayHigh") or price
+            day_low = meta.get("regularMarketDayLow") or price
+            if prev_close and prev_close > 0 and price:
+                change_pct = round(((price - prev_close) / prev_close) * 100.0, 2)
+    except Exception:
+        pass
+
+    price = round(float(price or 0.0), 2)
+    return {
+        "symbol": base,
+        "yahoo_symbol": yahoo_sym,
+        "token": tok,
+        "price": price,
+        "change_pct": change_pct,
+        "prev_close": round(float(prev_close or price), 2),
+        "day_high": round(float(day_high or price), 2),
+        "day_low": round(float(day_low or price), 2),
+        "target1": round(price * 1.015, 2),
+        "target2": round(price * 1.030, 2),
+        "stoploss": round(price * 0.988, 2)
+    }
+
+
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1478,8 +1556,26 @@ HTML_PAGE = """<!DOCTYPE html>
         .ip-pill { background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
         
         .tabs { display: flex; gap: 8px; margin-bottom: 14px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
-        .tab { padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 700; color: var(--text-muted); cursor: pointer; border: 1px solid transparent; }
+        .tab { padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 700; color: var(--text-muted); cursor: pointer; border: 1px solid transparent; transition: 0.2s; background: none; }
         .tab.active { color: #fff; background: var(--surface-card); border-color: var(--border); }
+        .tab:hover { color: #fff; }
+
+        /* Watchlist Grid & Cards */
+        .watchlist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+        .watchlist-card { background: var(--surface-card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; transition: 0.2s; position: relative; }
+        .watchlist-card:hover { border-color: var(--accent); box-shadow: 0 4px 20px rgba(0,0,0,0.3); transform: translateY(-1px); }
+
+        /* Sector & Category Filter Pills */
+        .sector-btn { padding: 5px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; border: 1px solid var(--border); background: #090f1d; color: var(--text-muted); cursor: pointer; transition: 0.2s; }
+        .sector-btn:hover { color: #fff; border-color: var(--border-accent); }
+        .sector-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; box-shadow: 0 0 10px rgba(37,99,235,0.4); }
+
+        /* Auto-Scanner Pulsing Animation */
+        @keyframes pulse-scan {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.75; transform: scale(1.04); }
+        }
+        .pulse-badge { animation: pulse-scan 1.5s infinite; }
     </style>
 </head>
 <body>
@@ -1577,126 +1673,214 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- Right Column: Scanner & Signals -->
+            <!-- Right Column: Scanner, Watchlist, Positions, Journal -->
             <div>
-                <div class="card">
-                    <div class="card-title">
-                        <span>🚀 Live AI Market Scanner</span>
-                        <span id="scan-status" style="font-size:12px; color:var(--text-muted);">Ready</span>
-                    </div>
+                <!-- Main Dashboard Navigation Tabs -->
+                <div class="tabs" style="margin-bottom:16px; display:flex; gap:8px; flex-wrap:wrap;">
+                    <button class="tab active" id="tab-nav-scanner" onclick="switchDashboardTab('scanner')" style="display:flex; align-items:center; gap:8px;">
+                        <span>🚀 Live AI Scanner</span>
+                        <span id="nav-auto-scan-pill" style="display:none; font-size:10px; background:#10b981; color:#000; padding:2px 7px; border-radius:10px; font-weight:900;">AUTO ON</span>
+                    </button>
+                    <button class="tab" id="tab-nav-watchlist" onclick="switchDashboardTab('watchlist')" style="display:flex; align-items:center; gap:8px;">
+                        <span>📋 Market Watchlist & Manual Buy</span>
+                        <span style="font-size:10px; background:rgba(59,130,246,0.25); color:#93c5fd; padding:2px 6px; border-radius:8px; font-weight:800;">69 Stocks</span>
+                    </button>
+                    <button class="tab" id="tab-nav-positions" onclick="switchDashboardTab('positions')" style="display:flex; align-items:center; gap:6px;">
+                        <span>💼 Open Positions & Orders</span>
+                        <span id="nav-pos-count" style="display:none; font-size:10px; background:#10b981; color:#000; padding:1px 6px; border-radius:10px; font-weight:800;">0</span>
+                    </button>
+                    <button class="tab" id="tab-nav-journal" onclick="switchDashboardTab('journal')">
+                        📝 Trade Journal
+                    </button>
+                </div>
 
-                    <!-- Scan Mode Toggle -->
-                    <div style="display:flex; gap:8px; margin-bottom:12px;">
-                        <button id="mode-fast-btn" class="btn btn-scan" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; opacity:1; box-shadow:0 0 16px rgba(59,130,246,0.5);" onclick="setScanMode('fast')">
-                            ⚡ FAST (5M)
-                        </button>
-                        <button id="mode-ai-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; opacity:0.6;" onclick="setScanMode('deep')">
-                            🧠 DEEP AI
-                        </button>
-                        <button id="mode-sniper-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff; opacity:0.6;" onclick="setScanMode('sniper')">
-                            👑 1-SNIPER (92%+)
-                        </button>
-                    </div>
+                <!-- ──── TAB 1: SCANNER ──── -->
+                <div id="tab-content-scanner">
+                    <div class="card">
+                        <div class="card-title">
+                            <span>🚀 Live AI Market Scanner</span>
+                            <span id="scan-status" style="font-size:12px; color:var(--text-muted);">Ready</span>
+                        </div>
 
-                    <div id="mode-label" style="text-align:center; font-size:11px; color:#94a3b8; margin-bottom:10px; padding:6px; background:#090f1d; border-radius:8px;">
-                        ⚡ <b>Fast Mode</b>: 5-Minute momentum scanner (1-2 seconds)
-                    </div>
+                        <!-- Scan Mode Toggle -->
+                        <div style="display:flex; gap:8px; margin-bottom:12px;">
+                            <button id="mode-fast-btn" class="btn btn-scan" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; opacity:1; box-shadow:0 0 16px rgba(59,130,246,0.5);" onclick="setScanMode('fast')">
+                                ⚡ FAST (5M)
+                            </button>
+                            <button id="mode-ai-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; opacity:0.6;" onclick="setScanMode('deep')">
+                                🧠 DEEP AI
+                            </button>
+                            <button id="mode-sniper-btn" class="btn" style="flex:1; padding:8px 6px; font-size:11px; font-weight:800; background:linear-gradient(135deg,#f59e0b,#d97706); color:#fff; opacity:0.6;" onclick="setScanMode('sniper')">
+                                👑 1-SNIPER (92%+)
+                            </button>
+                        </div>
 
-                    <!-- Scanner Control Bar -->
-                    <div class="scanner-bar">
-                        <label style="margin-bottom:0;">Category:</label>
-                        <select id="scan_cat">
-                            <option value="all">🌐 All Top Opportunities</option>
-                            <option value="budget">💰 Budget Stocks (&lt; ₹500)</option>
-                            <option value="nifty50">⚡ Nifty 50 High Conviction</option>
-                            <option value="momentum">🚀 Momentum Breakouts</option>
-                        </select>
-                        <button class="btn btn-scan" style="width:auto; padding:10px 20px;" onclick="runScanner()">
-                            🔍 SCAN MARKET NOW
-                        </button>
-                        <button class="btn btn-primary" style="width:auto; padding:10px 14px;" onclick="loadSignals()">
-                            🔄 Refresh
-                        </button>
-                    </div>
+                        <div id="mode-label" style="text-align:center; font-size:11px; color:#94a3b8; margin-bottom:10px; padding:6px; background:#090f1d; border-radius:8px;">
+                            ⚡ <b>Fast Mode</b>: 5-Minute momentum scanner (1-2 seconds)
+                        </div>
 
-                    <!-- Signals Container -->
-                    <div id="signals-container">
-                        <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:40px 0;">
-                            Click <b>"🔍 SCAN MARKET NOW"</b> to discover live AI buy/sell trade opportunities!
+                        <!-- Scanner Control Bar with Auto-Scanner -->
+                        <div class="scanner-bar" style="flex-wrap:wrap; gap:10px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <label style="margin-bottom:0;">Category:</label>
+                                <select id="scan_cat">
+                                    <option value="all">🌐 All Top Opportunities</option>
+                                    <option value="budget">💰 Budget Stocks (&lt; ₹500)</option>
+                                    <option value="nifty50">⚡ Nifty 50 High Conviction</option>
+                                    <option value="momentum">🚀 Momentum Breakouts</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-scan" style="width:auto; padding:10px 18px;" onclick="runScanner()">
+                                🔍 SCAN MARKET NOW
+                            </button>
+                            <button class="btn btn-primary" style="width:auto; padding:10px 12px;" onclick="loadSignals()">
+                                🔄 Refresh
+                            </button>
+
+                            <!-- ⚡ Auto-Scanner Controller -->
+                            <div style="display:inline-flex; align-items:center; gap:8px; background:#090f1d; padding:6px 12px; border-radius:10px; border:1px solid var(--border); margin-left:auto;">
+                                <label style="margin-bottom:0; font-size:11px; color:#94a3b8; display:flex; align-items:center; gap:6px; cursor:pointer;" onclick="toggleAutoScanner()">
+                                    <input type="checkbox" id="auto-scanner-toggle" onchange="toggleAutoScanner()" style="width:auto; margin:0; cursor:pointer;">
+                                    <b style="color:#fff;">⚡ Auto-Scanner:</b>
+                                </label>
+                                <select id="auto-scan-interval" onchange="changeAutoScanInterval()" style="width:auto; margin-bottom:0; padding:3px 6px; font-size:11px; background:#0f172a; border-radius:6px; border:1px solid var(--border); color:#38bdf8;">
+                                    <option value="30">Every 30s</option>
+                                    <option value="60" selected>Every 60s</option>
+                                    <option value="120">Every 2 Mins</option>
+                                    <option value="300">Every 5 Mins</option>
+                                </select>
+                                <span id="auto-scanner-badge" style="font-size:11px; font-weight:800; color:#94a3b8; padding:3px 8px; border-radius:6px; background:#1e293b;">
+                                    OFF
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Signals Container -->
+                        <div id="signals-container">
+                            <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:40px 0;">
+                                Click <b>"🔍 SCAN MARKET NOW"</b> or enable <b>⚡ Auto-Scanner</b> to discover live trade opportunities!
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ──── TAB 2: WATCHLIST & MANUAL BUY ──── -->
+                <div id="tab-content-watchlist" style="display:none;">
+                    <div class="card">
+                        <div class="card-title">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <span>📋 Market Watchlist & Manual Buy (Render Style)</span>
+                                <span class="badge" style="background:rgba(59,130,246,0.2); color:#60a5fa;">69 STOCKS</span>
+                            </div>
+                            <button id="btn-refresh-wl-prices" class="btn btn-primary" style="width:auto; padding:6px 14px; font-size:11px;" onclick="refreshWatchlistPrices()">
+                                🔄 Refresh Prices
+                            </button>
+                        </div>
+
+                        <!-- Watchlist Instructions -->
+                        <p style="font-size:12px; color:var(--text-muted); margin-bottom:12px;">
+                            Click <b>⚡ BUY</b> or <b>⚡ SELL</b> on any stock to manually place order with automatic <b>₹300 Max Risk Dynamic Sizing</b>.
                         </p>
+
+                        <!-- Search & Category Filters -->
+                        <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; align-items:center;">
+                            <input id="wl-search" placeholder="🔍 Search stock symbol or name (e.g. SBIN, SUZLON, TATA, RELIANCE)..." oninput="filterAndRenderWatchlist()" style="flex:1; min-width:220px; margin-bottom:0;">
+
+                            <div style="display:flex; gap:6px;" id="wl-cat-group">
+                                <button class="sector-btn active" id="wl-cat-all" onclick="filterWlCategory('all')">All (69)</button>
+                                <button class="sector-btn" id="wl-cat-nifty50" onclick="filterWlCategory('nifty50')">🏆 Nifty 50 (51)</button>
+                                <button class="sector-btn" id="wl-cat-budget" onclick="filterWlCategory('budget')">⚡ Budget (&lt;₹200) (18)</button>
+                            </div>
+                        </div>
+
+                        <!-- Sector Filter Buttons -->
+                        <div id="wl-sector-filters" style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px;">
+                            <!-- Injected dynamically via JS -->
+                        </div>
+
+                        <!-- Watchlist Grid -->
+                        <div id="watchlist-container" class="watchlist-grid">
+                            <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:30px; grid-column:1/-1;">Loading stocks...</p>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Live Open Positions -->
-                <div class="card">
-                    <div class="card-title">
-                        <span>💼 Angel One Open Positions</span>
-                        <button style="background:none; border:none; color:var(--accent); font-size:12px; font-weight:700; cursor:pointer;" onclick="loadPositions()">🔄 Refresh P&L</button>
+                <!-- ──── TAB 3: POSITIONS & ORDERS ──── -->
+                <div id="tab-content-positions" style="display:none;">
+                    <!-- Live Open Positions -->
+                    <div class="card">
+                        <div class="card-title">
+                            <span>💼 Angel One Open Positions</span>
+                            <button style="background:none; border:none; color:var(--accent); font-size:12px; font-weight:700; cursor:pointer;" onclick="loadPositions()">🔄 Refresh P&L</button>
+                        </div>
+                        <div id="positions-container">
+                            <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:15px 0;">No active open intraday positions right now.</p>
+                        </div>
                     </div>
-                    <div id="positions-container">
-                        <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:15px 0;">No active open intraday positions right now.</p>
+
+                    <!-- Today's Order Book with Charges -->
+                    <div class="card">
+                        <div class="card-title">
+                            <span>📋 Today's Orders & Charges</span>
+                            <button style="background:none; border:none; color:var(--accent); font-size:12px; font-weight:700; cursor:pointer;" onclick="loadOrders()">🔄 Refresh Orders</button>
+                        </div>
+                        <div id="orders-container">
+                            <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:15px 0;">
+                                Click <b>🔄 Refresh Orders</b> to see today's trades & charges.
+                            </p>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Today's Order Book with Charges -->
-                <div class="card">
-                    <div class="card-title">
-                        <span>📋 Today's Orders & Charges</span>
-                        <button style="background:none; border:none; color:var(--accent); font-size:12px; font-weight:700; cursor:pointer;" onclick="loadOrders()">🔄 Refresh Orders</button>
-                    </div>
-                    <div id="orders-container">
-                        <p style="color:var(--text-muted); font-size:13px; text-align:center; padding:15px 0;">
-                            Click <b>🔄 Refresh Orders</b> to see today's trades & charges.
-                        </p>
-                    </div>
-                </div>
+                <!-- ──── TAB 4: TRADE HISTORY & JOURNAL ──── -->
+                <div id="tab-content-journal" style="display:none;">
+                    <div class="card">
+                        <div class="card-title">
+                            <span id="journal-header-title">📝 Paper Trading Journal & History</span>
+                            <div style="display:flex; gap:8px;">
+                                <button id="jtab-paper" onclick="loadJournal('paper')" class="btn" style="width:auto; padding:6px 12px; font-size:11px; background:#2563eb; color:#fff;">Paper Trades</button>
+                                <button id="jtab-live" onclick="loadJournal('live')" class="btn" style="width:auto; padding:6px 12px; font-size:11px; background:#090f1d; color:var(--text-muted); border:1px solid var(--border);">Live Trades</button>
+                            </div>
+                        </div>
 
-                <!-- Trade History & Journal Card -->
-                <div class="card">
-                    <div class="card-title">
-                        <span id="journal-header-title">📝 Paper Trading Journal & History</span>
-                        <div style="display:flex; gap:8px;">
-                            <button id="jtab-paper" onclick="loadJournal('paper')" class="btn" style="width:auto; padding:6px 12px; font-size:11px; background:#2563eb; color:#fff;">Paper Trades</button>
-                            <button id="jtab-live" onclick="loadJournal('live')" class="btn" style="width:auto; padding:6px 12px; font-size:11px; background:#090f1d; color:var(--text-muted); border:1px solid var(--border);">Live Trades</button>
+                        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-bottom:16px;">
+                            <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                                <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Weekly Net P&L</div>
+                                <div id="j_weekly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
+                            </div>
+                            <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                                <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Monthly Net P&L</div>
+                                <div id="j_monthly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
+                            </div>
+                            <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                                <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Total Trades</div>
+                                <div id="j_total_trades" style="font-size:18px; font-weight:900; color:#60a5fa; margin-top:4px;">0</div>
+                            </div>
                         </div>
-                    </div>
-                    
-                    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-bottom:16px;">
-                        <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
-                            <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Weekly Net P&L</div>
-                            <div id="j_weekly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
-                        </div>
-                        <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
-                            <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Monthly Net P&L</div>
-                            <div id="j_monthly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
-                        </div>
-                        <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
-                            <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Total Trades</div>
-                            <div id="j_total_trades" style="font-size:18px; font-weight:900; color:#60a5fa; margin-top:4px;">0</div>
-                        </div>
-                    </div>
 
-                    <div style="overflow-x:auto;">
-                        <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left;">
-                            <thead>
-                                <tr style="border-bottom:1px solid var(--border); color:var(--text-muted); font-weight:700;">
-                                    <th style="padding:10px;">Symbol</th>
-                                    <th style="padding:10px;">Action</th>
-                                    <th style="padding:10px;">Qty</th>
-                                    <th style="padding:10px;">Entry (₹)</th>
-                                    <th style="padding:10px;">SL / Target</th>
-                                    <th style="padding:10px;">Status</th>
-                                    <th style="padding:10px;">P&L (₹)</th>
-                                    <th style="padding:10px;">Date</th>
-                                </tr>
-                            </thead>
-                            <tbody id="journal-trades-body">
-                                <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">Loading trade history...</td></tr>
-                            </tbody>
-                        </table>
+                        <div style="overflow-x:auto;">
+                            <table style="width:100%; border-collapse:collapse; font-size:12px; text-align:left;">
+                                <thead>
+                                    <tr style="border-bottom:1px solid var(--border); color:var(--text-muted); font-weight:700;">
+                                        <th style="padding:10px;">Symbol</th>
+                                        <th style="padding:10px;">Action</th>
+                                        <th style="padding:10px;">Qty</th>
+                                        <th style="padding:10px;">Entry</th>
+                                        <th style="padding:10px;">Targets / SL</th>
+                                        <th style="padding:10px;">Status</th>
+                                        <th style="padding:10px;">P&L (₹)</th>
+                                        <th style="padding:10px;">Date</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="journal-trades-body">
+                                    <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">Loading trade history...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
+
         </div>
     </div>
 
@@ -1723,6 +1907,7 @@ async function init() {
     } catch(e) { console.log(e); }
     loadSignals();
     loadJournal(currentTradingMode);
+    loadWatchlist();
     startAutoRefresh();
 }
 
@@ -1775,6 +1960,371 @@ async function doAutoRefresh() {
     try { await loadBalance(); } catch(e) {}
     try { await loadPositions(); } catch(e) {}
     try { await loadJournal(currentTradingMode); } catch(e) {}
+}
+
+// ══════ Dashboard Tab Navigation ══════
+let currentDashboardTab = 'scanner';
+
+function switchDashboardTab(tab) {
+    currentDashboardTab = tab;
+    ['scanner', 'watchlist', 'positions', 'journal'].forEach(t => {
+        const btn = document.getElementById('tab-nav-' + t);
+        const sec = document.getElementById('tab-content-' + t);
+        if (btn) btn.classList.toggle('active', t === tab);
+        if (sec) sec.style.display = (t === tab ? 'block' : 'none');
+    });
+
+    if (tab === 'watchlist') {
+        if (allWatchlistStocks.length === 0) {
+            loadWatchlist();
+        }
+    } else if (tab === 'positions') {
+        loadPositions();
+        loadOrders();
+    } else if (tab === 'journal') {
+        loadJournal(currentTradingMode);
+    }
+}
+
+// ══════ ⚡ Auto-Scanner Engine ══════
+let autoScanTimerId = null;
+let autoScanSecLeft = 60;
+let autoScanIntervalSec = 60;
+let isAutoScanRunning = false;
+let isScanBusy = false;
+
+function toggleAutoScanner() {
+    const chk = document.getElementById('auto-scanner-toggle');
+    const badge = document.getElementById('auto-scanner-badge');
+    const navPill = document.getElementById('nav-auto-scan-pill');
+
+    isAutoScanRunning = chk ? chk.checked : !isAutoScanRunning;
+    if (chk) chk.checked = isAutoScanRunning;
+
+    if (isAutoScanRunning) {
+        autoScanSecLeft = autoScanIntervalSec;
+        if (badge) {
+            badge.style.background = 'rgba(16,185,129,0.2)';
+            badge.style.color = '#34d399';
+            badge.className = 'pulse-badge';
+            badge.textContent = `🟢 ${autoScanSecLeft}s`;
+        }
+        if (navPill) {
+            navPill.style.display = 'inline-block';
+            navPill.textContent = `AUTO: ${autoScanSecLeft}s`;
+        }
+        startAutoScanTimer();
+        // Trigger immediate scan if no signals loaded
+        const cont = document.getElementById('signals-container');
+        if (cont && (cont.innerHTML.includes('Click') || cont.innerHTML.includes('0 Trades'))) {
+            triggerAutoScan();
+        }
+    } else {
+        if (autoScanTimerId) clearInterval(autoScanTimerId);
+        autoScanTimerId = null;
+        if (badge) {
+            badge.style.background = '#1e293b';
+            badge.style.color = '#94a3b8';
+            badge.className = '';
+            badge.textContent = 'OFF';
+        }
+        if (navPill) navPill.style.display = 'none';
+    }
+}
+
+function changeAutoScanInterval() {
+    const sel = document.getElementById('auto-scan-interval');
+    if (sel) {
+        autoScanIntervalSec = parseInt(sel.value) || 60;
+        if (isAutoScanRunning) {
+            autoScanSecLeft = autoScanIntervalSec;
+            const badge = document.getElementById('auto-scanner-badge');
+            if (badge) badge.textContent = `🟢 ${autoScanSecLeft}s`;
+        }
+    }
+}
+
+function startAutoScanTimer() {
+    if (autoScanTimerId) clearInterval(autoScanTimerId);
+    autoScanTimerId = setInterval(async () => {
+        if (!isAutoScanRunning) return;
+
+        autoScanSecLeft--;
+        const badge = document.getElementById('auto-scanner-badge');
+        const navPill = document.getElementById('nav-auto-scan-pill');
+
+        if (badge) badge.textContent = `🟢 ${autoScanSecLeft}s`;
+        if (navPill) navPill.textContent = `AUTO: ${autoScanSecLeft}s`;
+
+        if (autoScanSecLeft <= 0) {
+            autoScanSecLeft = autoScanIntervalSec;
+            await triggerAutoScan();
+        }
+    }, 1000);
+}
+
+async function triggerAutoScan() {
+    if (isScanBusy) return;
+    isScanBusy = true;
+    const badge = document.getElementById('auto-scanner-badge');
+    const navPill = document.getElementById('nav-auto-scan-pill');
+    if (badge) badge.textContent = '⚡ Scanning...';
+    if (navPill) navPill.textContent = 'SCANNING...';
+
+    try {
+        await runScanner(true);
+    } catch(e) {
+        console.error('Auto-scan error:', e);
+    } finally {
+        isScanBusy = false;
+        if (badge && isAutoScanRunning) badge.textContent = `🟢 ${autoScanSecLeft}s`;
+        if (navPill && isAutoScanRunning) navPill.textContent = `AUTO: ${autoScanSecLeft}s`;
+    }
+}
+
+// ══════ 📋 Market Watchlist & Manual Buy (Render Style) ══════
+let allWatchlistStocks = [];
+let activeWlCategory = 'all';
+let activeWlSector = 'All';
+let watchlistPricesCache = {};
+
+async function loadWatchlist() {
+    const cont = document.getElementById('watchlist-container');
+    if (cont && allWatchlistStocks.length === 0) {
+        cont.innerHTML = '<p style="color:var(--text-muted); font-size:13px; text-align:center; padding:30px; grid-column:1/-1;">⏳ Loading 69 Watchlist Stocks from NSE Database...</p>';
+    }
+    try {
+        const r = await fetch('/api/watchlist');
+        const d = await r.json();
+        allWatchlistStocks = d.stocks || [];
+        populateStockDatalist(allWatchlistStocks);
+        renderSectorFilters(allWatchlistStocks);
+        filterAndRenderWatchlist();
+        // Fetch live quotes for top 12 stocks in background
+        fetchWatchlistPrices(allWatchlistStocks.slice(0, 12));
+    } catch(e) {
+        if (cont) cont.innerHTML = '<p style="color:var(--red); font-size:13px; text-align:center; padding:20px; grid-column:1/-1;">Failed to load watchlist: ' + e + '</p>';
+    }
+}
+
+function renderSectorFilters(stocks) {
+    const el = document.getElementById('wl-sector-filters');
+    if (!el) return;
+    const sectors = ['All', ...new Set(stocks.map(s => s.sector || 'General'))].sort();
+    el.innerHTML = sectors.map(s =>
+        `<button class="sector-btn ${s === activeWlSector ? 'active' : ''}" onclick="filterWlSector('${s}')">${s}</button>`
+    ).join('');
+}
+
+function filterWlCategory(cat) {
+    activeWlCategory = cat;
+    ['all', 'nifty50', 'budget'].forEach(c => {
+        const btn = document.getElementById('wl-cat-' + c);
+        if (btn) btn.className = 'sector-btn' + (c === cat ? ' active' : '');
+    });
+    filterAndRenderWatchlist();
+}
+
+function filterWlSector(sec) {
+    activeWlSector = sec;
+    document.querySelectorAll('#wl-sector-filters .sector-btn').forEach(b => {
+        b.classList.toggle('active', b.textContent === sec);
+    });
+    filterAndRenderWatchlist();
+}
+
+function filterAndRenderWatchlist() {
+    const query = (document.getElementById('wl-search')?.value || '').toLowerCase().trim();
+    let list = allWatchlistStocks;
+
+    if (activeWlCategory === 'budget') {
+        list = list.filter(s => s.is_budget);
+    } else if (activeWlCategory === 'nifty50') {
+        list = list.filter(s => !s.is_budget);
+    }
+
+    if (activeWlSector !== 'All') {
+        list = list.filter(s => s.sector === activeWlSector);
+    }
+
+    if (query) {
+        list = list.filter(s =>
+            (s.symbol && s.symbol.toLowerCase().includes(query)) ||
+            (s.base && s.base.toLowerCase().includes(query)) ||
+            (s.name && s.name.toLowerCase().includes(query)) ||
+            (s.sector && s.sector.toLowerCase().includes(query))
+        );
+    }
+
+    renderWatchlistCards(list);
+}
+
+function renderWatchlistCards(stocks) {
+    const cont = document.getElementById('watchlist-container');
+    if (!cont) return;
+    if (!stocks.length) {
+        cont.innerHTML = '<p style="color:var(--text-muted); font-size:13px; text-align:center; padding:30px; grid-column:1/-1;">No stocks found matching search filter.</p>';
+        return;
+    }
+
+    let html = '';
+    stocks.forEach(s => {
+        const cached = watchlistPricesCache[s.base] || {};
+        const p = cached.price || 0;
+        const chg = cached.change_pct !== undefined ? cached.change_pct : null;
+        const pDisplay = p > 0 ? '₹' + p.toFixed(2) : '<span style="color:#64748b; font-size:12px;">Click to fetch</span>';
+        const chgDisplay = chg !== null ?
+            `<span style="font-size:11px; font-weight:700; color:${chg>=0?'#34d399':'#f87171'}; margin-left:6px;">${chg>=0?'+':''}${chg.toFixed(2)}%</span>` : '';
+
+        const badge = s.is_budget ?
+            '<span class="badge" style="background:rgba(234,179,8,0.15); color:#fbbf24; border:1px solid rgba(234,179,8,0.3); font-size:10px;">⚡ BUDGET</span>' :
+            '<span class="badge" style="background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); font-size:10px;">🏆 NIFTY 50</span>';
+
+        html += `
+        <div class="watchlist-card" id="wl-card-${s.base}">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">
+                <div>
+                    <div style="font-size:15px; font-weight:900; color:#fff;">${s.base}</div>
+                    <div style="font-size:11px; color:#94a3b8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px;" title="${s.name}">${s.name}</div>
+                </div>
+                ${badge}
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; margin:8px 0; padding:6px 10px; background:#090f1d; border-radius:8px; border:1px solid var(--border);">
+                <div>
+                    <span style="font-size:10px; color:#94a3b8; text-transform:uppercase;">Price</span>
+                    <div id="wl-p-${s.base}" style="font-size:14px; font-weight:900; color:#fff; display:flex; align-items:center;">
+                        ${pDisplay} ${chgDisplay}
+                    </div>
+                </div>
+                <div style="text-align:right;">
+                    <span style="font-size:10px; color:#94a3b8; text-transform:uppercase;">Sector</span>
+                    <div style="font-size:11px; font-weight:700; color:#cbd5e1;">${s.sector}</div>
+                </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr 36px; gap:6px;">
+                <button class="btn btn-buy" style="padding:7px 4px; font-size:11px; font-weight:800;" onclick="openTradeForStock('${s.base}', '${s.tok}', 'BUY', ${p})">
+                    ⚡ BUY
+                </button>
+                <button class="btn btn-sell" style="padding:7px 4px; font-size:11px; font-weight:800;" onclick="openTradeForStock('${s.base}', '${s.tok}', 'SELL', ${p})">
+                    ⚡ SELL
+                </button>
+                <button class="btn" style="padding:7px 0; font-size:12px; background:#1e293b; color:#94a3b8; border:1px solid var(--border);" title="Quick Scan this stock" onclick="scanSingleStock('${s.base}', '${s.name}', '${s.tok}')">
+                    🔍
+                </button>
+            </div>
+        </div>`;
+    });
+    cont.innerHTML = html;
+}
+
+async function openTradeForStock(base, tok, action, knownPrice) {
+    let p = parseFloat(knownPrice) || 0;
+    if (p <= 0) {
+        try {
+            const r = await fetch('/api/stock-price?symbol=' + encodeURIComponent(base));
+            const d = await r.json();
+            if (d.price && d.price > 0) {
+                p = d.price;
+                watchlistPricesCache[base] = d;
+                const el = document.getElementById('wl-p-' + base);
+                if (el) el.innerHTML = `₹${p.toFixed(2)} <span style="font-size:11px; font-weight:700; color:${(d.change_pct||0)>=0?'#34d399':'#f87171'}; margin-left:6px;">${(d.change_pct||0)>=0?'+':''}${(d.change_pct||0).toFixed(2)}%</span>`;
+            }
+        } catch(e) {}
+    }
+
+    if (p <= 0) p = 100.0;
+    const isBuy = action === 'BUY';
+    const t1 = (p * (isBuy ? 1.015 : 0.985)).toFixed(2);
+    const t2 = (p * (isBuy ? 1.030 : 0.970)).toFixed(2);
+    const sl = (p * (isBuy ? 0.988 : 1.012)).toFixed(2);
+
+    // Dynamic ₹300 Risk Quantity: Qty = Math.floor(300 / |price - sl|)
+    const riskPts = Math.abs(p - parseFloat(sl)) || (p * 0.01) || 1.0;
+    const qty = Math.max(1, Math.floor(300.0 / riskPts));
+
+    openTradeModal(base, tok, action, qty, p.toFixed(2), t1, t2, sl);
+}
+
+async function fetchWatchlistPrices(stocks) {
+    for (const s of stocks) {
+        try {
+            const r = await fetch('/api/stock-price?symbol=' + encodeURIComponent(s.base));
+            const d = await r.json();
+            if (d.price && d.price > 0) {
+                watchlistPricesCache[s.base] = d;
+                const el = document.getElementById('wl-p-' + s.base);
+                if (el) {
+                    el.innerHTML = `₹${d.price.toFixed(2)} <span style="font-size:11px; font-weight:700; color:${(d.change_pct||0)>=0?'#34d399':'#f87171'}; margin-left:6px;">${(d.change_pct||0)>=0?'+':''}${(d.change_pct||0).toFixed(2)}%</span>`;
+                }
+            }
+        } catch(e) {}
+    }
+}
+
+async function refreshWatchlistPrices() {
+    const btn = document.getElementById('btn-refresh-wl-prices');
+    if (btn) btn.textContent = '⏳ Fetching Prices...';
+    const query = (document.getElementById('wl-search')?.value || '').toLowerCase().trim();
+    let list = allWatchlistStocks;
+    if (activeWlCategory === 'budget') list = list.filter(s => s.is_budget);
+    else if (activeWlCategory === 'nifty50') list = list.filter(s => !s.is_budget);
+    if (activeWlSector !== 'All') list = list.filter(s => s.sector === activeWlSector);
+    if (query) list = list.filter(s => (s.symbol && s.symbol.toLowerCase().includes(query)) || (s.name && s.name.toLowerCase().includes(query)));
+
+    await fetchWatchlistPrices(list.slice(0, 25));
+    if (btn) btn.textContent = '🔄 Refresh Prices';
+}
+
+async function scanSingleStock(base, name, tok) {
+    switchDashboardTab('scanner');
+    const st = document.getElementById('scan-status');
+    const cont = document.getElementById('signals-container');
+    if (st) st.textContent = `Scanning ${base}...`;
+    if (cont) cont.innerHTML = `<p style="color:var(--text-muted); font-size:13px; text-align:center; padding:30px 0;">⏳ Running technical setup scan for <b>${base}</b> (${name})...</p>`;
+
+    try {
+        const r = await fetch('/api/scan-single?symbol=' + encodeURIComponent(base));
+        const d = await r.json();
+        if (d.signal) {
+            if (st) st.textContent = `Scan Complete — ${base}`;
+            renderSignals([d.signal]);
+        } else {
+            if (st) st.textContent = 'No Signal';
+            if (cont) cont.innerHTML = `<p style="color:var(--text-muted); font-size:13px; text-align:center; padding:30px 0;">No high-probability breakout setup on <b>${base}</b> right now.</p>`;
+        }
+    } catch(e) {
+        if (st) st.textContent = 'Error';
+        if (cont) cont.innerHTML = '<p style="color:var(--red); font-size:13px; text-align:center;">Scan failed: ' + e + '</p>';
+    }
+}
+
+function populateStockDatalist(stocks) {
+    let dl = document.getElementById('stocks-datalist');
+    if (!dl) {
+        dl = document.createElement('datalist');
+        dl.id = 'stocks-datalist';
+        document.body.appendChild(dl);
+    }
+    const input = document.getElementById('m_sym');
+    if (input) {
+        input.setAttribute('list', 'stocks-datalist');
+        input.addEventListener('change', async function() {
+            const val = this.value.trim().toUpperCase();
+            const found = stocks.find(s => s.base === val || s.symbol.replace('.NS','') === val.replace('-EQ',''));
+            if (found) {
+                this.value = found.base;
+                document.getElementById('m_tok').value = found.tok || '';
+                try {
+                    const r = await fetch('/api/stock-price?symbol=' + encodeURIComponent(found.base));
+                    const d = await r.json();
+                    if (d.price) document.getElementById('m_prc').value = d.price;
+                } catch(e) {}
+            }
+        });
+    }
+    dl.innerHTML = stocks.map(s => `<option value="${s.base}">${s.name} (${s.sector})</option>`).join('');
 }
 
 async function switchMode(mode, save = true) {
@@ -1953,6 +2503,12 @@ async function loadPositions() {
         // ✅ FIX: Only show OPEN positions (netqty != 0)
         const pos     = allPos.filter(p => parseInt(p.netqty || 0) !== 0);
         const closed  = allPos.filter(p => parseInt(p.netqty || 0) === 0);
+
+        const navPos = document.getElementById('nav-pos-count');
+        if (navPos) {
+            navPos.textContent = pos.length;
+            navPos.style.display = pos.length > 0 ? 'inline-block' : 'none';
+        }
 
         if (!pos.length && !closed.length) {
             cont.innerHTML = '<p style="color:var(--text-muted); font-size:13px; text-align:center; padding:15px 0;">No positions today.</p>';
@@ -2643,6 +3199,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(run_ultra_sniper_scan())
         elif path == "/api/ai-status":
             self._send_json({"deep_ai_available": DEEP_AI_AVAILABLE})
+        elif path == "/api/watchlist":
+            self._send_json(get_watchlist_data())
+        elif path == "/api/stock-price":
+            sym = query.get("symbol", ["SBIN"])[0]
+            self._send_json(get_single_stock_price(sym))
+        elif path == "/api/scan-single":
+            sym = query.get("symbol", ["SBIN"])[0]
+            base = sym.upper().replace(".NS", "").replace("-EQ", "")
+            stk = {
+                "symbol": f"{base}.NS",
+                "name": base,
+                "base": f"{base}-EQ",
+                "tok": ANGEL_TOKENS_MAP.get(f"{base}.NS", STOCK_TOKENS.get(f"{base}-EQ", get_live_token(f"{base}-EQ")))
+            }
+            sig = _analyze_single_stock_local(stk)
+            self._send_json({"signal": sig, "symbol": stk["base"]})
         elif path == "/api/balance":
             m = query.get("mode", [config.get("trading_mode", "paper")])[0]
             if m == "paper":
