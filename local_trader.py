@@ -712,6 +712,8 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             sl_res = {}
             if sl_val > 0:
                 sl_res = place_smartapi_sl_order(clean_sym, symbol_token, action, q, sl_val)
+                if sl_res.get("sl_order_id") and clean_sym in LOCAL_SL_TRACKER:
+                    LOCAL_SL_TRACKER[clean_sym]["sl_order_id"] = sl_res["sl_order_id"]
 
             sl_note = f"\n<b>Exchange SL ID:</b> {sl_res.get('sl_order_id')}" if sl_res.get("success") else "\n<b>SL Monitor:</b> Active (Real-time Guard)"
             tg_msg = (
@@ -1059,6 +1061,33 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
         return {"success": False, "message": err_msg}
 
 
+def cancel_smartapi_order(order_id: str, variety: str = "STOPLOSS") -> dict:
+    """Cancel any open order (e.g. Stop-Loss order) on Angel One."""
+    global auth_session
+    if not auth_session.get("jwtToken") or not order_id:
+        return {"success": False, "message": "No session or order ID"}
+    try:
+        url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/cancelOrder"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-UserType": "USER",
+            "X-SourceID": "WEB",
+            "X-ClientLocalIP": "127.0.0.1",
+            "X-ClientPublicIP": config.get("ip", "106.193.147.98"),
+            "X-MACAddress": "fe80::1",
+            "X-PrivateKey": config.get("api_key", ""),
+            "Authorization": f"Bearer {auth_session['jwtToken']}"
+        }
+        payload = {"variety": variety, "orderid": str(order_id)}
+        res = api_call(url, payload, headers)
+        print(f"🗑️ Angel One Cancel Order ({order_id}): {res}")
+        return res
+    except Exception as e:
+        print(f"⚠️ Cancel Order Error: {e}")
+        return {"success": False, "message": str(e)}
+
+
 SCRIP_TOKEN_CACHE = {}
 
 # ── Local SL & Loss Cap Monitoring Engine ─────────────────────────────────────
@@ -1189,7 +1218,7 @@ def _local_sl_monitor_thread():
                 avg_price = float(pos.get("avgprice") or pos.get("buyprice") or pos.get("sellprice") or 0)
                 tok = pos.get("symboltoken", "")
 
-                guard_info = LOCAL_SL_TRACKER.get(sym, {})
+                guard_info = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(f"{sym}-EQ") or LOCAL_SL_TRACKER.get(sym.replace("-EQ", "")) or {}
                 sl_price = guard_info.get("stop_loss", 0)
                 if (sl_price <= 0 or sl_price is None) and avg_price > 0:
                     max_move = 300.0 / qty
@@ -1197,17 +1226,12 @@ def _local_sl_monitor_thread():
 
                 target1 = guard_info.get("target1", 0)
                 target2 = guard_info.get("target2", 0)
+                if (target1 <= 0 or target1 is None) and avg_price > 0:
+                    target1 = round(avg_price * 1.015 if action == "BUY" else avg_price * 0.985, 2)
+                if (target2 <= 0 or target2 is None) and avg_price > 0:
+                    target2 = round(avg_price * 1.030 if action == "BUY" else avg_price * 0.970, 2)
 
-                # 🛡️ Zero-Risk Trailing Lock: On T1 Hit, move SL to Entry Price!
-                if target1 > 0 and not guard_info.get("t1_trailed"):
-                    t1_hit = (action == "BUY" and cmp_price >= target1) or (action == "SELL" and cmp_price <= target1)
-                    if t1_hit:
-                        guard_info["stop_loss"] = avg_price
-                        guard_info["t1_trailed"] = True
-                        sl_price = avg_price
-                        print(f"🛡️ ZERO-RISK PROFIT LOCK: {sym} reached T1! SL moved to Entry Price ₹{avg_price:.2f}. Risk is now ZERO!")
-
-                # Fetch real-time live price (CMP)
+                # ── STEP 1: Fetch Real-Time Live Price (CMP) First ──
                 yf_sym = sym.replace("-EQ", ".NS").replace("-BE", ".NS")
                 cmp_price = 0.0
                 try:
@@ -1226,7 +1250,23 @@ def _local_sl_monitor_thread():
                 if cmp_price <= 0:
                     continue
 
-                # Compute live P&L
+                # ── STEP 2: Zero-Risk Dynamic Profit Lock (On T1 Hit, SL -> Entry Price) ──
+                if target1 > 0 and not guard_info.get("t1_trailed"):
+                    t1_hit = (action == "BUY" and cmp_price >= target1) or (action == "SELL" and cmp_price <= target1)
+                    if t1_hit:
+                        guard_info["stop_loss"] = avg_price
+                        guard_info["t1_trailed"] = True
+                        sl_price = avg_price
+                        print(f"🛡️ ZERO-RISK PROFIT LOCK: {sym} reached T1 (₹{cmp_price:.2f})! SL moved to Entry Price ₹{avg_price:.2f}. Risk is now ZERO!")
+                        send_telegram_message(
+                            f"🛡️ <b>ZERO-RISK PROFIT LOCK ACTIVATED!</b>\n\n"
+                            f"• <b>Symbol:</b> {sym}\n"
+                            f"• <b>Target 1 Reached:</b> ₹{cmp_price:.2f}\n"
+                            f"• <b>New Trailing SL:</b> ₹{avg_price:.2f} (Entry Price)\n"
+                            f"• <b>Status:</b> Risk is now <b>ZERO (Cost-to-Cost)</b>! 🎯"
+                        )
+
+                # ── STEP 3: Compute Live P&L ──
                 if action == "BUY":
                     live_pnl = (cmp_price - avg_price) * qty
                 else:
@@ -1253,7 +1293,7 @@ def _local_sl_monitor_thread():
                     should_exit = True
                     exit_reason = f"SL/BREAKEVEN HIT (CMP ₹{cmp_price:.2f} >= SL ₹{sl_price:.2f})"
 
-                # Trigger 4: Target 2 Hit
+                # Trigger 4: Target 2 Hit (Full Profit Lock)
                 elif action == "BUY" and target2 > 0 and cmp_price >= target2:
                     should_exit = True
                     exit_reason = f"TARGET 2 HIT (CMP ₹{cmp_price:.2f} >= T2 ₹{target2:.2f})"
@@ -1261,9 +1301,14 @@ def _local_sl_monitor_thread():
                     should_exit = True
                     exit_reason = f"TARGET 2 HIT (CMP ₹{cmp_price:.2f} <= T2 ₹{target2:.2f})"
 
-                # Execute Auto-Squareoff!
+                # ── STEP 4: Execute Auto-Squareoff! ──
                 if should_exit:
                     print(f"🚨 AUTO SQUARE-OFF TRIGGERED for {sym}: {exit_reason}")
+                    # Cancel any pending exchange SL order to prevent duplicate sell
+                    sl_oid = guard_info.get("sl_order_id")
+                    if sl_oid:
+                        cancel_smartapi_order(sl_oid)
+
                     res = place_order(
                         symbol=sym,
                         symbol_token=tok,
@@ -1274,7 +1319,18 @@ def _local_sl_monitor_thread():
                         product="INTRADAY"
                     )
                     print(f"⚡ Auto Square-Off Result: {res}")
+                    send_telegram_message(
+                        f"🚨 <b>AUTO SQUARE-OFF EXECUTED</b>\n\n"
+                        f"• <b>Symbol:</b> {sym}\n"
+                        f"• <b>Reason:</b> {exit_reason}\n"
+                        f"• <b>Exit Price:</b> ₹{cmp_price:.2f}\n"
+                        f"• <b>P&L:</b> {'+' if live_pnl >= 0 else ''}₹{live_pnl:.2f}\n"
+                        f"• <b>Status:</b> {'✅ SUCCESS' if res.get('success') else '⚠️ CHECK BROKER'}"
+                    )
                     LOCAL_SL_TRACKER.pop(sym, None)
+                    clean_sym = sym.replace("-EQ", "").strip()
+                    LOCAL_SL_TRACKER.pop(clean_sym, None)
+                    LOCAL_SL_TRACKER.pop(f"{clean_sym}-EQ", None)
 
         except Exception as ex:
             pass
