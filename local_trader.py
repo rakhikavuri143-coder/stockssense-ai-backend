@@ -461,14 +461,49 @@ def save_config(new_config: dict):
         json.dump(config, f, indent=2)
 
 
+def auto_detect_chat_id(bot_token: str) -> Optional[str]:
+    """Inspects Telegram getUpdates to automatically find user/group Chat ID."""
+    if not bot_token:
+        return None
+    try:
+        url = f"https://api.telegram.org/bot{bot_token.strip()}/getUpdates"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            for u in reversed(data.get("result", [])):
+                m = u.get("message") or u.get("channel_post") or u.get("my_chat_member")
+                if m and "chat" in m and "id" in m["chat"]:
+                    return str(m["chat"]["id"])
+    except Exception:
+        pass
+    return None
+
+
 def send_telegram_direct(bot_token: str, chat_id: str, text: str) -> dict:
     """Synchronous direct sender to any specified Telegram Bot and Chat."""
-    if not bot_token or not chat_id:
-        return {"success": False, "message": "Bot Token and Chat ID are required!"}
+    if not bot_token:
+        return {"success": False, "message": "Bot Token is required!"}
+
+    bot_token = bot_token.strip()
+    chat_id = (chat_id or "").strip()
+    bot_id = bot_token.split(":")[0].strip() if ":" in bot_token else ""
+    detected_id = None
+
+    # If chat_id is missing or user mistakenly entered bot's own ID
+    if not chat_id or chat_id == bot_id:
+        detected_id = auto_detect_chat_id(bot_token)
+        if detected_id and detected_id != bot_id:
+            chat_id = detected_id
+        else:
+            return {
+                "success": False,
+                "message": f"❌ '{chat_id}' అనేది Bot ID! మీ Personal Chat ID కాదు. Telegram లో బాట్ ని ఓపెన్ చేసి START నొక్కి, Chat ID బాక్స్ లో 7327907687 ఎంటర్ చేయండి."
+            }
+
     try:
-        url = f"https://api.telegram.org/bot{bot_token.strip()}/sendMessage"
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {
-            "chat_id": chat_id.strip(),
+            "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML"
         }
@@ -477,9 +512,17 @@ def send_telegram_direct(bot_token: str, chat_id: str, text: str) -> dict:
         with urllib.request.urlopen(req, timeout=8) as resp:
             res = json.loads(resp.read().decode("utf-8"))
             if res.get("ok"):
-                return {"success": True, "message": "✅ Test alert delivered to your Telegram successfully!"}
+                msg = "✅ Test alert delivered to your Telegram successfully!"
+                if detected_id:
+                    msg += f" (Auto-detected Chat ID: {detected_id})"
+                return {"success": True, "message": msg, "detected_chat_id": chat_id}
             else:
                 return {"success": False, "message": f"Telegram API error: {res.get('description', 'Unknown error')}"}
+    except urllib.error.HTTPError as e:
+        err_msg = str(e)
+        if e.code == 403:
+            err_msg = "HTTP 403 Forbidden: Chat ID తప్పుగా ఉంది లేదా బాట్ ఇంకా /start చేయలేదు. దయచేసి Chat ID '7327907687' ఎంటర్ చేయండి."
+        return {"success": False, "message": f"Telegram connection error: {err_msg}"}
     except Exception as e:
         return {"success": False, "message": f"Telegram connection error: {e}"}
 
@@ -2504,7 +2547,7 @@ async function saveTelegramSettings() {
 
 async function testTelegramAlert() {
     const token = document.getElementById('cfg_tg_token').value.trim();
-    const chat = document.getElementById('cfg_tg_chat').value.trim();
+    let chat = document.getElementById('cfg_tg_chat').value.trim();
     const alertBox = document.getElementById('tg-alert');
     alertBox.style.display = 'block';
     alertBox.className = 'alert-box';
@@ -2519,6 +2562,10 @@ async function testTelegramAlert() {
         const d = await r.json();
         alertBox.textContent = d.message;
         alertBox.className = 'alert-box ' + (d.success ? 'alert-ok' : 'alert-err');
+        if (d.detected_chat_id) {
+            document.getElementById('cfg_tg_chat').value = d.detected_chat_id;
+            updateTelegramStatusPill(token, d.detected_chat_id);
+        }
     } catch(e) {
         alertBox.textContent = 'Test failed: ' + e;
         alertBox.className = 'alert-box alert-err';
@@ -3405,6 +3452,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "<i>All real-time trade signals, executions, SL, and Target hits from Local Trader will be delivered here instantly!</i>"
             )
             res = send_telegram_direct(bot_token, chat_id, test_msg)
+            if res.get("success") and res.get("detected_chat_id"):
+                config["telegram_chat_id"] = res["detected_chat_id"]
+                config["telegram_bot_token"] = bot_token
+                save_config(config)
             self._send_json(res)
         elif self.path == "/api/set-trading-mode":
             m = body.get("mode", "paper")
