@@ -671,6 +671,16 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
     if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
         clean_sym = f"{clean_sym}-EQ"
     
+    # Auto-resolve symbol token upfront for both Main Order and SL Order
+    if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
+        symbol_token = STOCK_TOKENS.get(clean_sym) or STOCK_TOKENS.get(clean_sym.replace("-EQ", ""))
+        if not symbol_token:
+            from backend.broker_angelone import get_angelone_token_and_symbol
+            tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
+            if tok:
+                symbol_token = tok
+                clean_sym = t_sym
+
     p = float(price or 0)
     sl_val = float(sl or 0)
     t1_val = float(t1 or 0)
@@ -691,12 +701,21 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             f"<b>Action:</b> {action.upper()}\n"
             f"<b>Qty:</b> {q} (₹300 Risk Sizing)\n"
             f"<b>Entry Price:</b> ₹{p:.2f}\n"
-            f"<b>SL:</b> ₹{sl_val:.2f} | <b>T1:</b> ₹{t1_val:.2f}"
+            f"<b>SL:</b> ₹{sl_val:.2f} | <b>T1:</b> ₹{t1_val:.2f} | <b>T2:</b> ₹{t2_val:.2f}"
         )
         send_telegram_message(tg_msg)
         return {
             "success": True,
             "mode": "paper",
+            "symbol": clean_sym,
+            "action": action.upper(),
+            "qty": q,
+            "entry_price": p,
+            "sl_price": sl_val,
+            "target1": t1_val,
+            "target2": t2_val,
+            "sl_placed": True,
+            "sl_order_id": f"PAPER-SL-{tid or int(time.time())}",
             "order_id": f"PAPER-{tid or int(time.time())}",
             "message": f"🎉 PAPER TRADE PLACED SUCCESSFULLY!\nSymbol: {clean_sym}\nAction: {action.upper()}\nQty: {q}\nPrice: ₹{p:.2f}\nRisk Cap: ₹300.00"
         }
@@ -715,7 +734,16 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
                 if sl_res.get("sl_order_id") and clean_sym in LOCAL_SL_TRACKER:
                     LOCAL_SL_TRACKER[clean_sym]["sl_order_id"] = sl_res["sl_order_id"]
 
-            sl_note = f"\n<b>Exchange SL ID:</b> {sl_res.get('sl_order_id')}" if sl_res.get("success") else "\n<b>SL Monitor:</b> Active (Real-time Guard)"
+            sl_placed = sl_res.get("success", False)
+            sl_oid = sl_res.get("sl_order_id")
+            if sl_placed:
+                sl_note = f"\n🛡️ <b>Exchange SL Order:</b> PLACED (ID: {sl_oid} @ ₹{sl_val:.2f})"
+                sl_summary = f"Exchange SL Placed (#{sl_oid})"
+            else:
+                sl_err = sl_res.get("message", "Broker rejected SL order")
+                sl_note = f"\n⚠️ <b>Exchange SL:</b> {sl_err} (Local SL Guard Monitor is ACTIVE in background!)"
+                sl_summary = f"Local SL Guard Active ({sl_err})"
+
             tg_msg = (
                 f"💼 <b>LIVE ORDER EXECUTED (ANGEL ONE)</b>\n"
                 f"<b>Symbol:</b> {clean_sym}\n"
@@ -724,9 +752,29 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
                 f"<b>Entry Price:</b> ₹{p:.2f}\n"
                 f"<b>SL:</b> ₹{sl_val:.2f}\n"
                 f"<b>Order ID:</b> {order_id}"
-                f"{sl_note}"
+                f"{sl_note}\n"
+                f"🎯 <b>Targets:</b> T1 ₹{t1_val:.2f} | T2 ₹{t2_val:.2f}"
             )
             send_telegram_message(tg_msg)
+
+            res["sl_order_id"] = sl_oid
+            res["sl_placed"] = sl_placed
+            res["sl_summary"] = sl_summary
+            res["symbol"] = clean_sym
+            res["action"] = action.upper()
+            res["qty"] = q
+            res["entry_price"] = p
+            res["sl_price"] = sl_val
+            res["target1"] = t1_val
+            res["target2"] = t2_val
+            res["message"] = (
+                f"🎉 LIVE ORDER EXECUTED ON ANGEL ONE!\n\n"
+                f"📌 Stock: {clean_sym} ({action.upper()})\n"
+                f"📦 Quantity: {q} Shares (₹300 Risk Sizing)\n"
+                f"💵 Main Order ID: {order_id}\n"
+                f"{sl_note}\n"
+                f"🎯 Targets: T1 ₹{t1_val:.2f} | T2 ₹{t2_val:.2f}"
+            )
         return res
 
 
@@ -1011,14 +1059,30 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
 
     if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
         symbol_token = STOCK_TOKENS.get(clean_sym) or STOCK_TOKENS.get(clean_sym.replace("-EQ", ""))
+        if not symbol_token:
+            from backend.broker_angelone import get_angelone_token_and_symbol
+            tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
+            if tok:
+                symbol_token = tok
+                clean_sym = t_sym
 
     if not symbol_token:
         return {"success": False, "message": f"Could not resolve token for SL order: {symbol}"}
 
     counter_action = "SELL" if action.upper() == "BUY" else "BUY"
-    trigger_p = round(float(sl_price), 2)
-    # Give a slight price buffer for LIMIT order upon trigger to ensure execution
-    limit_p = round(trigger_p * 0.996 if counter_action == "SELL" else trigger_p * 1.004, 2)
+    
+    # Tick size compliance (multiples of 0.05 on NSE)
+    raw_trigger = float(sl_price)
+    trigger_p = round(round(raw_trigger / 0.05) * 0.05, 2)
+    
+    # For SELL SL: limit_price <= trigger_price
+    # For BUY SL: limit_price >= trigger_price
+    if counter_action == "SELL":
+        raw_limit = trigger_p * 0.995
+        limit_p = min(trigger_p, round(round(raw_limit / 0.05) * 0.05, 2))
+    else:
+        raw_limit = trigger_p * 1.005
+        limit_p = max(trigger_p, round(round(raw_limit / 0.05) * 0.05, 2))
 
     my_ip = auth_session.get("my_ip", get_my_ip())
     headers = {
@@ -1033,32 +1097,42 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
         "MACAddress": "fe-80-00-00-00-00"
     }
 
-    payload = {
-        "variety": "STOPLOSS",
-        "tradingsymbol": clean_sym,
-        "symboltoken": str(symbol_token),
-        "transactiontype": counter_action,
-        "exchange": exchange.upper(),
-        "ordertype": "STOPLOSS_LIMIT",
-        "producttype": product.upper(),
-        "duration": "DAY",
-        "price": str(limit_p),
-        "triggerprice": str(trigger_p),
-        "quantity": str(max(1, int(qty))),
-        "squareoff": "0.00",
-        "stoploss": "0.00"
-    }
+    last_res = {}
+    for variety_type in ["STOPLOSS", "NORMAL"]:
+        payload = {
+            "variety": variety_type,
+            "tradingsymbol": clean_sym,
+            "symboltoken": str(symbol_token),
+            "transactiontype": counter_action,
+            "exchange": exchange.upper(),
+            "ordertype": "STOPLOSS_LIMIT",
+            "producttype": product.upper(),
+            "duration": "DAY",
+            "price": str(limit_p),
+            "triggerprice": str(trigger_p),
+            "quantity": str(max(1, int(qty))),
+            "squareoff": "0.00",
+            "stoploss": "0.00"
+        }
 
-    url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/placeOrder"
-    result = api_call(url, payload, headers)
-    if result.get("status") is True and "data" in result:
-        sl_order_id = result["data"].get("uniqueorderid") or result["data"].get("orderid")
-        print(f"🛡️ Angel One Exchange SL Order Placed! ID: {sl_order_id} | Trigger: ₹{trigger_p:.2f} | Limit: ₹{limit_p:.2f}")
-        return {"success": True, "sl_order_id": sl_order_id, "message": f"Exchange SL Order Placed: {sl_order_id}"}
-    else:
-        err_msg = result.get("message", "SL Order rejected")
-        print(f"⚠️ Angel One Exchange SL Order note: {err_msg} (Local SL Guard Monitor active in background)")
-        return {"success": False, "message": err_msg}
+        url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/placeOrder"
+        result = api_call(url, payload, headers)
+        last_res = result
+        if result.get("status") is True and "data" in result:
+            sl_order_id = result["data"].get("uniqueorderid") or result["data"].get("orderid")
+            print(f"🛡️ Angel One Exchange SL Order Placed! ID: {sl_order_id} (Variety: {variety_type}) | Trigger: ₹{trigger_p:.2f} | Limit: ₹{limit_p:.2f}")
+            return {
+                "success": True, 
+                "sl_order_id": sl_order_id, 
+                "trigger_price": trigger_p, 
+                "limit_price": limit_p, 
+                "variety": variety_type,
+                "message": f"Exchange SL Order Placed: {sl_order_id}"
+            }
+
+    err_msg = last_res.get("message", "SL Order rejected")
+    print(f"⚠️ Angel One Exchange SL Order note: {err_msg} (Local SL Guard Monitor active in background)")
+    return {"success": False, "message": err_msg}
 
 
 def cancel_smartapi_order(order_id: str, variety: str = "STOPLOSS") -> dict:
@@ -3147,18 +3221,46 @@ function renderSignals(sigs, deepMode) {
     cont.innerHTML = html;
 }
 
+function showGlobalToast(msg, type='success') {
+    let toast = document.getElementById('global-toast');
+    if (!toast) return;
+    toast.style.background = type === 'success' ? '#064e3b' : '#7f1d1d';
+    toast.style.color = type === 'success' ? '#6ee7b7' : '#fca5a5';
+    toast.style.border = type === 'success' ? '1px solid #10b981' : '1px solid #ef4444';
+    toast.innerHTML = msg;
+    toast.style.display = 'block';
+    setTimeout(() => {
+        if (toast) toast.style.display = 'none';
+    }, 8000);
+}
+
 function openTradeModal(sym, tok, action, qty, price, target1, target2, sl) {
+    // Reset view to form
+    const formCont = document.getElementById('modal_form_container');
+    const succCont = document.getElementById('modal_success_container');
+    if (formCont) formCont.style.display = 'block';
+    if (succCont) { succCont.style.display = 'none'; succCont.innerHTML = ''; }
+
     document.getElementById('modal_sym').textContent = sym;
     document.getElementById('modal_tok').value = tok;
     document.getElementById('modal_action').textContent = action;
     document.getElementById('modal_action').className = 'badge ' + (action === 'BUY' ? 'badge-buy' : 'badge-sell');
     
     const submitBtn = document.getElementById('modal_btn_submit');
-    submitBtn.className = 'btn ' + (action === 'BUY' ? 'btn-buy' : 'btn-sell');
-    if (currentTradingMode === 'paper') {
-        submitBtn.textContent = `⚡ CONFIRM PAPER TRADE (${action})`;
-    } else {
-        submitBtn.textContent = `⚡ CONFIRM LIVE ORDER (ANGEL ONE)`;
+    if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.className = 'btn ' + (action === 'BUY' ? 'btn-buy' : 'btn-sell');
+        if (currentTradingMode === 'paper') {
+            submitBtn.textContent = `⚡ CONFIRM PAPER TRADE (${action})`;
+        } else {
+            submitBtn.textContent = `⚡ CONFIRM LIVE ORDER (ANGEL ONE)`;
+        }
+    }
+
+    const alertBox = document.getElementById('modal-alert');
+    if (alertBox) {
+        alertBox.style.display = 'none';
+        alertBox.textContent = '';
     }
 
     const isBuy = action === 'BUY';
@@ -3181,7 +3283,12 @@ function openTradeModal(sym, tok, action, qty, price, target1, target2, sl) {
 
 function closeTradeModal() {
     document.getElementById('trade-modal-overlay').style.display = 'none';
-    document.getElementById('modal-alert').style.display = 'none';
+    const alertBox = document.getElementById('modal-alert');
+    if (alertBox) alertBox.style.display = 'none';
+    const formCont = document.getElementById('modal_form_container');
+    const succCont = document.getElementById('modal_success_container');
+    if (formCont) formCont.style.display = 'block';
+    if (succCont) { succCont.style.display = 'none'; succCont.innerHTML = ''; }
 }
 
 function updateModalMath(autoRecalcQty = false) {
@@ -3245,33 +3352,108 @@ async function executeModalOrder() {
     const t1 = parseFloat(document.getElementById('modal_t1').value) || 0;
     const t2 = parseFloat(document.getElementById('modal_t2').value) || 0;
 
+    const btnSubmit = document.getElementById('modal_btn_submit');
     const alertBox = document.getElementById('modal-alert');
-    alertBox.style.display = 'block';
-    alertBox.className = 'alert-box';
-    alertBox.textContent = currentTradingMode === 'paper' ? `⏳ Placing Virtual Paper Trade for ${sym}...` : `⏳ Placing ${action} order for ${sym} (5X Intraday MIS) on Angel One...`;
+    if (btnSubmit) {
+        btnSubmit.disabled = true;
+        btnSubmit.innerHTML = `⏳ Placing ${action} Order...`;
+    }
+    if (alertBox) {
+        alertBox.style.display = 'block';
+        alertBox.className = 'alert-box';
+        alertBox.textContent = currentTradingMode === 'paper' ? `⏳ Placing Virtual Paper Trade for ${sym}...` : `⏳ Placing ${action} order for ${sym} (5X Intraday MIS) on Angel One...`;
+    }
 
-    const r = await fetch('/api/place-order', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            symbol: sym, 
-            token: tok, 
-            action: action, 
-            qty: qty, 
-            price: price, 
-            stoploss: sl, 
-            target1: t1, 
-            target2: t2,
-            mode: currentTradingMode
-        })
-    });
-    const d = await r.json();
-    alertBox.textContent = d.message;
-    alertBox.className = 'alert-box ' + (d.success ? 'alert-ok' : 'alert-err');
-    loadBalance();
-    loadPositions();
-    loadJournal(currentTradingMode);
-    if (typeof loadOrders === 'function') loadOrders();
+    try {
+        const r = await fetch('/api/place-order', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                symbol: sym, 
+                token: tok, 
+                action: action, 
+                qty: qty, 
+                price: price, 
+                stoploss: sl, 
+                target1: t1, 
+                target2: t2,
+                mode: currentTradingMode
+            })
+        });
+        const d = await r.json();
+
+        if (d.success) {
+            // Transform Modal into Rich Order Confirmation Screen
+            const formCont = document.getElementById('modal_form_container');
+            const succCont = document.getElementById('modal_success_container');
+            if (formCont && succCont) {
+                formCont.style.display = 'none';
+                succCont.style.display = 'block';
+                succCont.innerHTML = `
+                    <div style="text-align:center; padding:10px 0;">
+                        <div style="font-size:46px; margin-bottom:8px;">🎉</div>
+                        <h2 style="color:#10b981; margin:0 0 6px 0; font-size:22px;">ORDER EXECUTED!</h2>
+                        <p style="color:#94a3b8; font-size:13px; margin:0 0 16px 0;">Order confirmed on Angel One Exchange</p>
+
+                        <div style="background:#090f1d; border:1px solid #1e293b; border-radius:12px; padding:16px; text-align:left; margin-bottom:16px; font-size:13px;">
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px; border-bottom:1px solid #1e293b; padding-bottom:8px;">
+                                <span style="color:#94a3b8;">Stock / Action:</span>
+                                <b style="color:#fff;">${d.symbol || sym} <span class="badge ${d.action === 'BUY' ? 'badge-buy' : 'badge-sell'}">${d.action || action}</span></b>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                <span style="color:#94a3b8;">Quantity:</span>
+                                <b style="color:#fff;">${d.qty || qty} Shares (₹300 Risk Sized)</b>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                <span style="color:#94a3b8;">Angel One Order ID:</span>
+                                <b style="color:#60a5fa; font-family:monospace;">${d.order_id || 'N/A'}</b>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                <span style="color:#94a3b8;">Exchange Stop-Loss:</span>
+                                <b style="color:${d.sl_placed ? '#34d399' : '#fbbf24'};">
+                                    ${d.sl_placed ? `✅ PLACED IN BOOK (#${d.sl_order_id})` : `🛡️ ACTIVE (Local SL Guard)`}
+                                </b>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                <span style="color:#94a3b8;">Stop Loss Price:</span>
+                                <b style="color:#f87171;">₹${parseFloat(d.sl_price || sl).toFixed(2)}</b>
+                            </div>
+                            <div style="display:flex; justify-content:space-between;">
+                                <span style="color:#94a3b8;">Targets:</span>
+                                <b style="color:#34d399;">T1: ₹${parseFloat(d.target1 || t1).toFixed(2)} | T2: ₹${parseFloat(d.target2 || t2).toFixed(2)}</b>
+                            </div>
+                        </div>
+
+                        <button class="btn btn-buy" style="width:100%; padding:14px; font-size:15px; font-weight:800;" onclick="closeTradeModal(); switchTab('portfolio');">
+                            📊 Done & View Active Positions
+                        </button>
+                    </div>
+                `;
+            }
+
+            // Global floating toast on dashboard
+            showGlobalToast(`🎉 Order Placed: <b>${d.symbol || sym}</b> (${d.qty || qty} shs) | ID: ${d.order_id} | SL: ₹${parseFloat(d.sl_price || sl).toFixed(2)}`, 'success');
+        } else {
+            alertBox.textContent = d.message || 'Order failed';
+            alertBox.className = 'alert-box alert-err';
+            if (btnSubmit) {
+                btnSubmit.disabled = false;
+                btnSubmit.innerHTML = currentTradingMode === 'paper' ? `⚡ CONFIRM PAPER TRADE (${action})` : `⚡ CONFIRM LIVE ORDER (ANGEL ONE)`;
+            }
+        }
+
+        loadBalance();
+        loadPositions();
+        loadJournal(currentTradingMode);
+        if (typeof loadOrders === 'function') loadOrders();
+    } catch(e) {
+        alertBox.textContent = 'Order placement failed: ' + e;
+        alertBox.className = 'alert-box alert-err';
+        if (btnSubmit) {
+            btnSubmit.disabled = false;
+            btnSubmit.innerHTML = currentTradingMode === 'paper' ? `⚡ CONFIRM PAPER TRADE (${action})` : `⚡ CONFIRM LIVE ORDER (ANGEL ONE)`;
+        }
+    }
 }
 
 
@@ -3315,79 +3497,86 @@ window.onload = init;
 <!-- Interactive Trade Modal -->
 <div id="trade-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.75); backdrop-filter:blur(5px); z-index:9999; justify-content:center; align-items:center;">
     <div style="background:#0f172a; border:1px solid #334155; border-radius:18px; width:520px; max-width:92%; padding:24px; box-shadow:0 20px 50px rgba(0,0,0,0.6);">
-        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #1e293b; padding-bottom:14px; margin-bottom:16px;">
-            <div style="display:flex; align-items:center; gap:10px;">
-                <span id="modal_sym" style="font-size:18px; font-weight:900; color:#fff;">STOCK-EQ</span>
-                <span id="modal_action" class="badge badge-buy">BUY</span>
-                <span class="badge" style="background:#1e293b; color:#94a3b8;">5X INTRADAY MIS</span>
+        <div id="modal_form_container">
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #1e293b; padding-bottom:14px; margin-bottom:16px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span id="modal_sym" style="font-size:18px; font-weight:900; color:#fff;">STOCK-EQ</span>
+                    <span id="modal_action" class="badge badge-buy">BUY</span>
+                    <span class="badge" style="background:#1e293b; color:#94a3b8;">5X INTRADAY MIS</span>
+                </div>
+                <button style="background:none; border:none; color:#94a3b8; font-size:20px; cursor:pointer;" onclick="closeTradeModal()">✕</button>
             </div>
-            <button style="background:none; border:none; color:#94a3b8; font-size:20px; cursor:pointer;" onclick="closeTradeModal()">✕</button>
-        </div>
-        <input type="hidden" id="modal_tok" value="">
+            <input type="hidden" id="modal_tok" value="">
 
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
-            <div>
-                <label>Quantity (Shares) <span style="font-size:10px; color:#10b981; font-weight:700;">(₹300 Risk Sizing)</span></label>
-                <div style="display:flex; gap:6px;">
-                    <input id="modal_qty" type="number" value="1" oninput="updateModalMath(false)" style="margin-bottom:0;">
-                    <button class="btn btn-primary" style="width:auto; padding:0 8px; font-size:10px; background:#10b981; border:none;" onclick="applyRiskSizing()">🎯 ₹300</button>
-                    <button class="btn btn-primary" style="width:auto; padding:0 8px; font-size:10px;" onclick="setModalMaxQty()">MAX</button>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                <div>
+                    <label>Quantity (Shares) <span style="font-size:10px; color:#10b981; font-weight:700;">(₹300 Risk Sizing)</span></label>
+                    <div style="display:flex; gap:6px;">
+                        <input id="modal_qty" type="number" value="1" oninput="updateModalMath(false)" style="margin-bottom:0;">
+                        <button class="btn btn-primary" style="width:auto; padding:0 8px; font-size:10px; background:#10b981; border:none;" onclick="applyRiskSizing()">🎯 ₹300</button>
+                        <button class="btn btn-primary" style="width:auto; padding:0 8px; font-size:10px;" onclick="setModalMaxQty()">MAX</button>
+                    </div>
+                </div>
+                <div>
+                    <label>Order Price (₹)</label>
+                    <input id="modal_price" type="number" step="0.05" oninput="updateModalMath(true)" style="margin-bottom:0;">
                 </div>
             </div>
-            <div>
-                <label>Order Price (₹)</label>
-                <input id="modal_price" type="number" step="0.05" oninput="updateModalMath(true)" style="margin-bottom:0;">
+
+            <!-- T1, T2, SL Input Row -->
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:14px;">
+                <div>
+                    <label style="color:#34d399;">🎯 Target 1 (T1)</label>
+                    <input id="modal_t1" type="number" step="0.05" oninput="updateModalMath(false)" style="margin-bottom:0; color:#34d399; font-weight:700;">
+                </div>
+                <div>
+                    <label style="color:#fbbf24;">🚀 Target 2 (T2)</label>
+                    <input id="modal_t2" type="number" step="0.05" oninput="updateModalMath(false)" style="margin-bottom:0; color:#fbbf24; font-weight:700;">
+                </div>
+                <div>
+                    <label style="color:#f87171;">🛡️ Stop Loss (SL)</label>
+                    <input id="modal_sl" type="number" step="0.05" oninput="updateModalMath(true)" style="margin-bottom:0; color:#f87171; font-weight:700;">
+                </div>
             </div>
+
+            <!-- Profit / Loss Expectations Matrix -->
+            <div style="background:#090f1d; padding:12px; border-radius:10px; border:1px solid #1e293b; display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; font-size:11px; margin-bottom:14px; text-align:center;">
+                <div>
+                    <span style="color:#94a3b8;">Gain @ T1:</span>
+                    <b id="modal_pnl_t1" style="color:#34d399; display:block; font-size:13px; margin-top:2px;">+₹0.00</b>
+                </div>
+                <div>
+                    <span style="color:#94a3b8;">Gain @ T2:</span>
+                    <b id="modal_pnl_t2" style="color:#fbbf24; display:block; font-size:13px; margin-top:2px;">+₹0.00</b>
+                </div>
+                <div>
+                    <span style="color:#94a3b8;">Max Risk @ SL:</span>
+                    <b id="modal_pnl_sl" style="color:#f87171; display:block; font-size:13px; margin-top:2px;">-₹0.00</b>
+                </div>
+            </div>
+
+            <div style="background:#090f1d; padding:12px; border-radius:10px; border:1px solid #1e293b; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:12px; margin-bottom:16px;">
+                <div>
+                    <span style="color:#94a3b8;">Required Margin (5X):</span>
+                    <b id="modal_margin" style="color:#60a5fa; display:block; font-size:14px; margin-top:2px;">₹0.00</b>
+                </div>
+                <div>
+                    <span style="color:#94a3b8;">Total Stock Exposure:</span>
+                    <b id="modal_exposure" style="color:#fff; display:block; font-size:14px; margin-top:2px;">₹0.00</b>
+                </div>
+            </div>
+
+            <button id="modal_btn_submit" class="btn btn-buy" onclick="executeModalOrder()">
+                ⚡ CONFIRM LIVE ORDER (ANGEL ONE)
+            </button>
+
+            <div id="modal-alert" style="display:none;" class="alert-box"></div>
         </div>
 
-        <!-- T1, T2, SL Input Row -->
-        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:14px;">
-            <div>
-                <label style="color:#34d399;">🎯 Target 1 (T1)</label>
-                <input id="modal_t1" type="number" step="0.05" oninput="updateModalMath(false)" style="margin-bottom:0; color:#34d399; font-weight:700;">
-            </div>
-            <div>
-                <label style="color:#fbbf24;">🚀 Target 2 (T2)</label>
-                <input id="modal_t2" type="number" step="0.05" oninput="updateModalMath(false)" style="margin-bottom:0; color:#fbbf24; font-weight:700;">
-            </div>
-            <div>
-                <label style="color:#f87171;">🛡️ Stop Loss (SL)</label>
-                <input id="modal_sl" type="number" step="0.05" oninput="updateModalMath(true)" style="margin-bottom:0; color:#f87171; font-weight:700;">
-            </div>
-        </div>
-
-        <!-- Profit / Loss Expectations Matrix -->
-        <div style="background:#090f1d; padding:12px; border-radius:10px; border:1px solid #1e293b; display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; font-size:11px; margin-bottom:14px; text-align:center;">
-            <div>
-                <span style="color:#94a3b8;">Gain @ T1:</span>
-                <b id="modal_pnl_t1" style="color:#34d399; display:block; font-size:13px; margin-top:2px;">+₹0.00</b>
-            </div>
-            <div>
-                <span style="color:#94a3b8;">Gain @ T2:</span>
-                <b id="modal_pnl_t2" style="color:#fbbf24; display:block; font-size:13px; margin-top:2px;">+₹0.00</b>
-            </div>
-            <div>
-                <span style="color:#94a3b8;">Max Risk @ SL:</span>
-                <b id="modal_pnl_sl" style="color:#f87171; display:block; font-size:13px; margin-top:2px;">-₹0.00</b>
-            </div>
-        </div>
-
-        <div style="background:#090f1d; padding:12px; border-radius:10px; border:1px solid #1e293b; display:grid; grid-template-columns:1fr 1fr; gap:10px; font-size:12px; margin-bottom:16px;">
-            <div>
-                <span style="color:#94a3b8;">Required Margin (5X):</span>
-                <b id="modal_margin" style="color:#60a5fa; display:block; font-size:14px; margin-top:2px;">₹0.00</b>
-            </div>
-            <div>
-                <span style="color:#94a3b8;">Total Stock Exposure:</span>
-                <b id="modal_exposure" style="color:#fff; display:block; font-size:14px; margin-top:2px;">₹0.00</b>
-            </div>
-        </div>
-
-        <button id="modal_btn_submit" class="btn btn-buy" onclick="executeModalOrder()">
-            ⚡ CONFIRM LIVE ORDER (ANGEL ONE)
-        </button>
-
-        <div id="modal-alert" style="display:none;" class="alert-box"></div>
+        <div id="modal_success_container" style="display:none;"></div>
+    </div>
+</div>
+<div id="global-toast" style="display:none; position:fixed; top:24px; right:24px; z-index:999999; padding:14px 20px; border-radius:10px; font-weight:700; font-size:14px; box-shadow:0 10px 30px rgba(0,0,0,0.8); transition:all 0.3s ease;"></div>
     </div>
 </div>
 </body>
