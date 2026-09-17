@@ -1184,6 +1184,10 @@ SCRIP_TOKEN_CACHE = {}
 
 # ── Local SL & Loss Cap Monitoring Engine ─────────────────────────────────────
 LOCAL_SL_TRACKER = {}  # {clean_sym: {symbol, symbol_token, action, qty, entry_price, stop_loss, target1, target2}}
+POSITION_FIRST_SEEN = {}  # {sym: timestamp_when_first_detected_as_open}
+SL_AUTO_PLACED = {}      # {sym: True}  tracks if we already auto-placed exchange SL for this position
+SL_AUTO_DELAY_SECS = 180  # 3 minutes after detecting open position → auto-place exchange SL
+
 
 def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty: int, entry_price: float, stop_loss: float = 0, target1: float = 0, target2: float = 0):
     """Register trade in local SL monitor engine with strict ₹300 loss cap."""
@@ -1295,11 +1299,111 @@ def _local_sl_monitor_thread():
 
             if not open_positions:
                 LOCAL_SL_TRACKER.clear()
+                POSITION_FIRST_SEEN.clear()
+                SL_AUTO_PLACED.clear()
                 continue
 
             ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
             time_str = ist_now.strftime("%H:%M")
             is_eod = "15:10" <= time_str <= "15:35"
+
+            # ── AUTO SL PLACEMENT (3-MINUTE DELAYED ENGINE) ──────────────────
+            # For each newly detected open position, record first-seen time.
+            # After SL_AUTO_DELAY_SECS (3 min), if no exchange SL order exists
+            # in Angel One order book for that symbol, auto-place one.
+            now_ts = time.time()
+            for sym in list(open_positions.keys()):
+                if sym not in POSITION_FIRST_SEEN:
+                    POSITION_FIRST_SEEN[sym] = now_ts
+                    print(f"🕐 New open position detected: {sym}. Auto-SL will be placed in {SL_AUTO_DELAY_SECS//60} mins if not already present.")
+
+            # Check positions that have waited >= SL_AUTO_DELAY_SECS
+            for sym, first_seen_ts in list(POSITION_FIRST_SEEN.items()):
+                if sym not in open_positions:
+                    POSITION_FIRST_SEEN.pop(sym, None)
+                    SL_AUTO_PLACED.pop(sym, None)
+                    continue
+                if SL_AUTO_PLACED.get(sym):
+                    continue  # Already placed SL for this position
+                elapsed = now_ts - first_seen_ts
+                if elapsed < SL_AUTO_DELAY_SECS:
+                    remaining = int(SL_AUTO_DELAY_SECS - elapsed)
+                    print(f"⏳ Auto-SL for {sym}: waiting {remaining}s more before placing exchange SL...")
+                    continue
+
+                # 3 minutes passed — check if exchange SL already exists in order book
+                try:
+                    pos = open_positions[sym]
+                    pos_qty  = abs(int(pos.get("netqty") or 0))
+                    net_qty  = int(pos.get("netqty") or 0)
+                    pos_act  = "BUY" if net_qty > 0 else "SELL"
+                    avg_p    = float(pos.get("avgprice") or pos.get("buyprice") or pos.get("sellprice") or 0)
+                    pos_tok  = pos.get("symboltoken") or ""
+
+                    # Resolve token if missing
+                    if not pos_tok or str(pos_tok).strip() in ("", "None", "0"):
+                        guard_info_sl = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(sym.replace("-EQ", "")) or {}
+                        pos_tok = guard_info_sl.get("symbol_token", "") or STOCK_TOKENS.get(sym) or STOCK_TOKENS.get(sym.replace("-EQ", ""))
+
+                    # Decide SL price from tracker or ₹300 cap
+                    guard_sl_info = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(f"{sym}-EQ") or LOCAL_SL_TRACKER.get(sym.replace("-EQ", "")) or {}
+                    auto_sl_price = guard_sl_info.get("stop_loss", 0)
+                    if (auto_sl_price <= 0) and avg_p > 0:
+                        max_move = 300.0 / max(1, pos_qty)
+                        auto_sl_price = round(avg_p - max_move if pos_act == "BUY" else avg_p + max_move, 2)
+
+                    # Check order book: is there already an open STOPLOSS order for this symbol?
+                    ob_res = get_order_book()
+                    ob_orders = ob_res.get("orders") or []
+                    sl_exists = False
+                    counter_action = "SELL" if pos_act == "BUY" else "BUY"
+                    for o in ob_orders:
+                        o_sym    = (o.get("tradingsymbol") or "").upper()
+                        o_tx     = (o.get("transactiontype") or "").upper()
+                        o_type   = (o.get("ordertype") or "").upper()
+                        o_status = (o.get("orderstatus") or o.get("status") or "").upper()
+                        if (o_sym == sym.upper() and o_tx == counter_action and
+                                "STOPLOSS" in o_type and o_status in ("OPEN", "PENDING", "TRIGGER PENDING")):
+                            sl_exists = True
+                            break
+
+                    if sl_exists:
+                        print(f"✅ {sym}: Exchange SL already present in order book. No auto-place needed.")
+                        SL_AUTO_PLACED[sym] = True
+                    elif auto_sl_price > 0 and pos_tok:
+                        print(f"🤖 AUTO-SL PLACEMENT (3-MIN DELAY): {sym} | SL ₹{auto_sl_price:.2f} | Qty {pos_qty}")
+                        sl_res = place_smartapi_sl_order(sym, pos_tok, pos_act, pos_qty, auto_sl_price)
+                        if sl_res.get("success"):
+                            sl_oid = sl_res.get("sl_order_id")
+                            SL_AUTO_PLACED[sym] = True
+                            # Store in tracker
+                            if sym in LOCAL_SL_TRACKER:
+                                LOCAL_SL_TRACKER[sym]["sl_order_id"] = sl_oid
+                            print(f"✅ Auto-SL Placed for {sym}: Order ID {sl_oid} @ ₹{auto_sl_price:.2f}")
+                            send_telegram_message(
+                                f"🤖 <b>AUTO STOP-LOSS PLACED (3-Min Delay)</b>\n\n"
+                                f"• <b>Symbol:</b> {sym}\n"
+                                f"• <b>SL Price:</b> ₹{auto_sl_price:.2f}\n"
+                                f"• <b>SL Order ID:</b> {sl_oid}\n"
+                                f"• <b>Qty:</b> {pos_qty}\n"
+                                f"• <b>Note:</b> Auto-placed 3 min after position detected ✅"
+                            )
+                        else:
+                            err = sl_res.get("message", "Unknown")
+                            print(f"⚠️ Auto-SL for {sym} failed: {err}")
+                            send_telegram_message(
+                                f"⚠️ <b>AUTO-SL FAILED for {sym}</b>\n"
+                                f"Error: {err}\n"
+                                f"<b>Local ₹300 Guard is ACTIVE as fallback!</b>"
+                            )
+                            # Reset so we retry next cycle
+                            POSITION_FIRST_SEEN[sym] = now_ts  # retry in 3 more mins
+                    else:
+                        print(f"⚠️ Auto-SL for {sym}: cannot determine SL price or token. Local guard active.")
+                except Exception as auto_sl_ex:
+                    print(f"⚠️ Auto-SL engine error for {sym}: {auto_sl_ex}")
+            # ── END AUTO SL PLACEMENT ─────────────────────────────────────────
+
 
             for sym, pos in open_positions.items():
                 qty = abs(int(pos.get("netqty") or 0))
@@ -1423,6 +1527,11 @@ def _local_sl_monitor_thread():
                     clean_sym = sym.replace("-EQ", "").strip()
                     LOCAL_SL_TRACKER.pop(clean_sym, None)
                     LOCAL_SL_TRACKER.pop(f"{clean_sym}-EQ", None)
+                    POSITION_FIRST_SEEN.pop(sym, None)
+                    POSITION_FIRST_SEEN.pop(clean_sym, None)
+                    SL_AUTO_PLACED.pop(sym, None)
+                    SL_AUTO_PLACED.pop(clean_sym, None)
+
 
         except Exception as ex:
             pass
@@ -1930,6 +2039,23 @@ HTML_PAGE = """<!DOCTYPE html>
                         <button class="btn" style="flex:1; background:#0284c7; color:#fff; font-weight:800;" onclick="testTelegramAlert()">🔔 Test</button>
                     </div>
                     <div id="tg-alert" style="display:none;" class="alert-box"></div>
+                </div>
+
+                <!-- 🤖 Auto-SL Delay Settings Card -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>🤖 Auto Stop-Loss Delay</span>
+                        <span style="font-size:10px; background:#10b981; color:#000; padding:2px 7px; border-radius:8px; font-weight:800;" id="sl-delay-badge">3 MIN</span>
+                    </div>
+                    <p style="font-size:11px; color:var(--text-muted); margin-bottom:10px; line-height:1.4;">
+                        After buying a stock, Local Trader will <b>automatically place a Stop-Loss order</b> in Angel One exchange after this delay. SL price is from your entry setup or ₹300 cap.
+                    </p>
+                    <label>Delay after Buy (minutes)</label>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <input id="sl-delay-input" type="number" min="1" max="15" value="3" style="flex:1; padding:8px 10px; font-size:14px; font-weight:700;">
+                        <button class="btn btn-primary" style="flex:1; font-weight:800;" onclick="setSLDelay()">⚡ Set Delay</button>
+                    </div>
+                    <div id="sl-delay-alert" style="display:none;" class="alert-box"></div>
                 </div>
             </div>
 
@@ -2756,6 +2882,29 @@ function updateTelegramStatusPill(token, chat) {
         pill.textContent = 'DEFAULT BOT';
         pill.style.background = '#2563eb';
         pill.style.color = '#fff';
+    }
+}
+
+async function setSLDelay() {
+    const mins = parseInt(document.getElementById('sl-delay-input').value) || 3;
+    const alertBox = document.getElementById('sl-delay-alert');
+    alertBox.style.display = 'block';
+    alertBox.className = 'alert-box';
+    alertBox.textContent = `⏳ Setting Auto-SL delay to ${mins} minute(s)...`;
+    try {
+        const r = await fetch('/api/set-sl-delay', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({delay_mins: mins})
+        });
+        const d = await r.json();
+        alertBox.textContent = d.message || (d.success ? '✅ Done!' : '❌ Failed');
+        alertBox.className = 'alert-box ' + (d.success ? 'alert-ok' : 'alert-err');
+        const badge = document.getElementById('sl-delay-badge');
+        if (badge && d.success) badge.textContent = `${mins} MIN`;
+    } catch(e) {
+        alertBox.textContent = 'Error: ' + e;
+        alertBox.className = 'alert-box alert-err';
     }
 }
 
@@ -3765,6 +3914,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             config["trading_mode"] = m
             save_config(config)
             self._send_json({"success": True, "trading_mode": m})
+        elif self.path == "/api/set-sl-delay":
+            global SL_AUTO_DELAY_SECS
+            delay_mins = int(body.get("delay_mins", 3))
+            delay_mins = max(1, min(15, delay_mins))  # clamp 1–15 minutes
+            SL_AUTO_DELAY_SECS = delay_mins * 60
+            self._send_json({"success": True, "delay_mins": delay_mins, "message": f"✅ Auto-SL delay set to {delay_mins} minutes!"})
         elif self.path == "/api/place-order":
             try:
                 sym = body.get("symbol", "")
