@@ -1499,6 +1499,9 @@ HTML_PAGE = """<!DOCTYPE html>
                     <button id="hdr-mode-live" onclick="switchMode('live')" style="padding:6px 14px; border-radius:20px; font-size:12px; font-weight:800; border:none; cursor:pointer; background:transparent; color:var(--text-muted);">💼 LIVE MODE</button>
                 </div>
                 <div id="conn-badge" class="status-badge status-disconnected">● Connecting...</div>
+                <div id="refresh-timer-badge" onclick="toggleAutoRefresh()" style="padding:6px 14px; border-radius:20px; font-size:11px; font-weight:700; cursor:pointer; background:rgba(59,130,246,0.15); border:1px solid rgba(59,130,246,0.3); color:#93c5fd; display:inline-flex; align-items:center; gap:6px; user-select:none;" title="Click to pause/resume auto-refresh">
+                    🔄 <span id="refresh-countdown">15s</span>
+                </div>
             </div>
         </div>
 
@@ -1720,6 +1723,58 @@ async function init() {
     } catch(e) { console.log(e); }
     loadSignals();
     loadJournal(currentTradingMode);
+    startAutoRefresh();
+}
+
+// ═══ Auto-Refresh Timer (15s) ═══
+let _refreshInterval = null;
+let _refreshCountdown = 15;
+let _refreshPaused = false;
+const REFRESH_SECONDS = 15;
+
+function startAutoRefresh() {
+    if (_refreshInterval) clearInterval(_refreshInterval);
+    _refreshCountdown = REFRESH_SECONDS;
+    _refreshPaused = false;
+    updateRefreshBadge();
+    _refreshInterval = setInterval(() => {
+        if (_refreshPaused) return;
+        _refreshCountdown--;
+        if (_refreshCountdown <= 0) {
+            doAutoRefresh();
+            _refreshCountdown = REFRESH_SECONDS;
+        }
+        updateRefreshBadge();
+    }, 1000);
+}
+
+function updateRefreshBadge() {
+    const el = document.getElementById('refresh-countdown');
+    const badge = document.getElementById('refresh-timer-badge');
+    if (!el || !badge) return;
+    if (_refreshPaused) {
+        el.textContent = 'Paused';
+        badge.style.background = 'rgba(239,68,68,0.15)';
+        badge.style.borderColor = 'rgba(239,68,68,0.3)';
+        badge.style.color = '#f87171';
+    } else {
+        el.textContent = _refreshCountdown + 's';
+        badge.style.background = 'rgba(59,130,246,0.15)';
+        badge.style.borderColor = 'rgba(59,130,246,0.3)';
+        badge.style.color = '#93c5fd';
+    }
+}
+
+function toggleAutoRefresh() {
+    _refreshPaused = !_refreshPaused;
+    if (!_refreshPaused) _refreshCountdown = REFRESH_SECONDS;
+    updateRefreshBadge();
+}
+
+async function doAutoRefresh() {
+    try { await loadBalance(); } catch(e) {}
+    try { await loadPositions(); } catch(e) {}
+    try { await loadJournal(currentTradingMode); } catch(e) {}
 }
 
 async function switchMode(mode, save = true) {
