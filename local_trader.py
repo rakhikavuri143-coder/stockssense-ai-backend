@@ -58,9 +58,9 @@ except Exception as _dbe:
     print(f"⚠️ Database module load error: {_dbe}")
 
 try:
-    from backend.telegram_alerts import send_telegram_message
+    from backend.telegram_alerts import send_telegram_message as _backend_tg_send
 except Exception:
-    def send_telegram_message(msg, parse_mode="HTML"): pass
+    def _backend_tg_send(msg, parse_mode="HTML"): pass
 
 ANGEL_TOKENS_MAP = {
     "RELIANCE.NS": "2885",  "TCS.NS": "11536",  "HDFCBANK.NS": "1333",
@@ -438,7 +438,9 @@ config = {
     "password": "",
     "api_key": "",
     "totp_secret": "",
-    "trading_mode": "paper"
+    "trading_mode": "paper",
+    "telegram_bot_token": "",
+    "telegram_chat_id": ""
 }
 
 if os.path.exists(CONFIG_FILE):
@@ -457,6 +459,47 @@ def save_config(new_config: dict):
     config.update(new_config)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
+
+
+def send_telegram_direct(bot_token: str, chat_id: str, text: str) -> dict:
+    """Synchronous direct sender to any specified Telegram Bot and Chat."""
+    if not bot_token or not chat_id:
+        return {"success": False, "message": "Bot Token and Chat ID are required!"}
+    try:
+        url = f"https://api.telegram.org/bot{bot_token.strip()}/sendMessage"
+        payload = {
+            "chat_id": chat_id.strip(),
+            "text": text,
+            "parse_mode": "HTML"
+        }
+        data = urllib.parse.urlencode(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            res = json.loads(resp.read().decode("utf-8"))
+            if res.get("ok"):
+                return {"success": True, "message": "✅ Test alert delivered to your Telegram successfully!"}
+            else:
+                return {"success": False, "message": f"Telegram API error: {res.get('description', 'Unknown error')}"}
+    except Exception as e:
+        return {"success": False, "message": f"Telegram connection error: {e}"}
+
+
+def send_telegram_message(msg: str, parse_mode: str = "HTML"):
+    """
+    Unified Telegram alert sender for Local Trader:
+    If a custom Telegram bot/chat is saved in local_config.json, sends to that custom bot.
+    Otherwise, falls back to the backend default Telegram bot.
+    """
+    bot_token = (config.get("telegram_bot_token") or "").strip()
+    chat_id = (config.get("telegram_chat_id") or "").strip()
+
+    if bot_token and chat_id:
+        def _bg():
+            send_telegram_direct(bot_token, chat_id, msg)
+        import threading
+        threading.Thread(target=_bg, daemon=True).start()
+    else:
+        _backend_tg_send(msg, parse_mode=parse_mode)
 
 
 def save_paper_trade_db(symbol: str, action: str, qty: int, price: float, sl: float = 0, t1: float = 0, t2: float = 0, company_name: str = ""):
@@ -1671,6 +1714,27 @@ HTML_PAGE = """<!DOCTYPE html>
                     <button class="btn btn-primary" onclick="saveAndLogin()">💾 Save & Re-Connect</button>
                     <div id="auth-alert" style="display:none;" class="alert-box"></div>
                 </div>
+
+                <!-- 📱 Local Telegram Alerts Card -->
+                <div class="card">
+                    <div class="card-title">
+                        <span>📱 Telegram Alerts (Local)</span>
+                        <span id="tg-status-pill" style="font-size:10px; background:#2563eb; color:#fff; padding:2px 7px; border-radius:8px; font-weight:800;">DEFAULT BOT</span>
+                    </div>
+                    <p style="font-size:11px; color:var(--text-muted); margin-bottom:10px; line-height:1.4;">
+                        Add a separate/custom Telegram Bot & Chat ID for Local Trader orders and exit alerts.
+                    </p>
+                    <label>Telegram Bot Token</label>
+                    <input id="cfg_tg_token" placeholder="e.g. 8613233140:AAEfeblJ0e5vK...">
+                    <label>Telegram Chat ID</label>
+                    <input id="cfg_tg_chat" placeholder="e.g. 7327907687 or -100...">
+
+                    <div style="display:flex; gap:8px;">
+                        <button class="btn btn-primary" style="flex:2;" onclick="saveTelegramSettings()">💾 Save Telegram</button>
+                        <button class="btn" style="flex:1; background:#0284c7; color:#fff; font-weight:800;" onclick="testTelegramAlert()">🔔 Test</button>
+                    </div>
+                    <div id="tg-alert" style="display:none;" class="alert-box"></div>
+                </div>
             </div>
 
             <!-- Right Column: Scanner, Watchlist, Positions, Journal -->
@@ -1897,6 +1961,14 @@ async function init() {
         document.getElementById('cfg_key').value = d.api_key || '';
         document.getElementById('cfg_totp').value = d.totp_secret || '';
         if (d.ip) document.getElementById('display-ip').textContent = d.ip;
+
+        if (document.getElementById('cfg_tg_token')) {
+            document.getElementById('cfg_tg_token').value = d.telegram_bot_token || '';
+        }
+        if (document.getElementById('cfg_tg_chat')) {
+            document.getElementById('cfg_tg_chat').value = d.telegram_chat_id || '';
+        }
+        updateTelegramStatusPill(d.telegram_bot_token, d.telegram_chat_id);
 
         currentTradingMode = d.trading_mode || 'paper';
         switchMode(currentTradingMode, false);
@@ -2403,6 +2475,67 @@ async function saveAndLogin() {
         if (d.ip) document.getElementById('display-ip').textContent = d.ip;
         loadBalance();
         loadPositions();
+    }
+}
+
+async function saveTelegramSettings() {
+    const token = document.getElementById('cfg_tg_token').value.trim();
+    const chat = document.getElementById('cfg_tg_chat').value.trim();
+    const alertBox = document.getElementById('tg-alert');
+    alertBox.style.display = 'block';
+    alertBox.className = 'alert-box';
+    alertBox.textContent = '⏳ Saving Telegram settings...';
+
+    try {
+        const r = await fetch('/api/save-telegram', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({telegram_bot_token: token, telegram_chat_id: chat})
+        });
+        const d = await r.json();
+        alertBox.textContent = d.message;
+        alertBox.className = 'alert-box ' + (d.success ? 'alert-ok' : 'alert-err');
+        updateTelegramStatusPill(token, chat);
+    } catch(e) {
+        alertBox.textContent = 'Error: ' + e;
+        alertBox.className = 'alert-box alert-err';
+    }
+}
+
+async function testTelegramAlert() {
+    const token = document.getElementById('cfg_tg_token').value.trim();
+    const chat = document.getElementById('cfg_tg_chat').value.trim();
+    const alertBox = document.getElementById('tg-alert');
+    alertBox.style.display = 'block';
+    alertBox.className = 'alert-box';
+    alertBox.textContent = '⏳ Sending test message to Telegram...';
+
+    try {
+        const r = await fetch('/api/test-telegram', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({telegram_bot_token: token, telegram_chat_id: chat})
+        });
+        const d = await r.json();
+        alertBox.textContent = d.message;
+        alertBox.className = 'alert-box ' + (d.success ? 'alert-ok' : 'alert-err');
+    } catch(e) {
+        alertBox.textContent = 'Test failed: ' + e;
+        alertBox.className = 'alert-box alert-err';
+    }
+}
+
+function updateTelegramStatusPill(token, chat) {
+    const pill = document.getElementById('tg-status-pill');
+    if (!pill) return;
+    if (token && chat) {
+        pill.textContent = 'CUSTOM BOT ACTIVE';
+        pill.style.background = '#10b981';
+        pill.style.color = '#000';
+    } else {
+        pill.textContent = 'DEFAULT BOT';
+        pill.style.background = '#2563eb';
+        pill.style.color = '#fff';
     }
 }
 
@@ -3253,6 +3386,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/login":
             res = login_smartapi()
             self._send_json(res)
+        elif self.path == "/api/save-telegram":
+            bot_token = body.get("telegram_bot_token", "").strip()
+            chat_id = body.get("telegram_chat_id", "").strip()
+            config["telegram_bot_token"] = bot_token
+            config["telegram_chat_id"] = chat_id
+            save_config(config)
+            self._send_json({"success": True, "message": "✅ Telegram Bot settings saved successfully!"})
+        elif self.path == "/api/test-telegram":
+            bot_token = body.get("telegram_bot_token", "").strip() or config.get("telegram_bot_token") or "8613233140:AAEfeblJ0e5vK9iJe5CWgao_yjiGRsBuvMk"
+            chat_id = body.get("telegram_chat_id", "").strip() or config.get("telegram_chat_id") or "7327907687"
+            test_msg = (
+                "🚀 <b>StocksSense AI — Local Live Trader</b>\n\n"
+                "✅ <b>Telegram Alert Bot Connected Successfully!</b>\n\n"
+                f"• <b>Bot:</b> Configured & Active\n"
+                f"• <b>Mode:</b> {config.get('trading_mode', 'paper').upper()}\n"
+                f"• <b>Risk Model:</b> Strict ₹300 Max Loss / Trade\n\n"
+                "<i>All real-time trade signals, executions, SL, and Target hits from Local Trader will be delivered here instantly!</i>"
+            )
+            res = send_telegram_direct(bot_token, chat_id, test_msg)
+            self._send_json(res)
         elif self.path == "/api/set-trading-mode":
             m = body.get("mode", "paper")
             config["trading_mode"] = m
@@ -3296,7 +3449,7 @@ def main():
     print(f"  🚀 Local Web Dashboard   : http://localhost:{PORT}")
     print("=" * 65)
     
-    server = http.server.HTTPServer(("127.0.0.1", PORT), Handler)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     try:
         webbrowser.open(f"http://localhost:{PORT}")
     except:
