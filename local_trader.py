@@ -1052,7 +1052,9 @@ def place_order(symbol, symbol_token, action, qty, price=0, exchange="NSE", orde
         }
     else:
         msg = result.get("message", "Unknown error")
-        return {"success": False, "message": f"❌ Angel One Error: {msg}"}
+        if "registered ip" in msg.lower() or "not a registered ip" in msg.lower() or "ab1012" in msg.lower():
+            msg = f"❌ Angel One IP Rejection: Your current IP ({my_ip}) is not registered. Please open https://smartapi.angelone.in/ -> My Apps -> Edit App -> Add IP: {my_ip}"
+        return {"success": False, "message": msg}
 
 
 def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: int, sl_price: float, exchange: str = "NSE", product: str = "INTRADAY") -> dict:
@@ -1145,6 +1147,8 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
             }
 
     err_msg = last_res.get("message", "SL Order rejected")
+    if "registered ip" in err_msg.lower() or "not a registered ip" in err_msg.lower() or "ab1012" in err_msg.lower():
+        err_msg = f"Angel One IP Rejection: Current IP ({my_ip}) not registered in smartapi.angelone.in"
     print(f"⚠️ Angel One Exchange SL Order note: {err_msg} (Local SL Guard Monitor active in background)")
     return {"success": False, "message": err_msg}
 
@@ -1815,7 +1819,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="logo-area">
                 <h1>⚡ StocksSense AI — Local Live Trader Pro</h1>
                 <p>
-                    Outbound IP: <span class="ip-pill" id="display-ip">157.50.91.3</span>
+                    Outbound IP: <span class="ip-pill" id="display-ip" onclick="copyIP()" style="cursor:pointer;" title="Click to copy IP for smartapi.angelone.in">157.50.93.133</span>
                     <span>● Angel One SmartAPI Bridge</span>
                 </p>
             </div>
@@ -1889,6 +1893,11 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="card-title">
                         <span>🔐 SmartAPI Credentials</span>
                         <span style="font-size:11px; color:var(--text-muted);">Saved on PC</span>
+                    </div>
+                    <div style="background:rgba(234, 179, 8, 0.1); border:1px solid rgba(234, 179, 8, 0.3); border-radius:8px; padding:10px; margin-bottom:12px; font-size:11px; color:#fde047; line-height:1.4;">
+                        🛡️ <b>Angel One Static IP Requirement:</b><br>
+                        Your current IP is <b id="cfg-display-ip" style="color:#fff; text-decoration:underline; cursor:pointer;" onclick="copyIP()" title="Click to copy">157.50.93.133</b> [📋 Click to Copy].<br>
+                        Angel One only permits automated orders &amp; Stop-Loss from registered IPs. Please verify this IP is added in <a href="https://smartapi.angelone.in/" target="_blank" style="color:#60a5fa; text-decoration:underline; font-weight:bold;">smartapi.angelone.in</a>.
                     </div>
                     <label>Client Code</label>
                     <input id="cfg_client" placeholder="AACL535586">
@@ -2618,6 +2627,16 @@ async function switchMode(mode, save = true) {
     loadJournal(mode);
 }
 
+function copyIP() {
+    const el = document.getElementById('display-ip');
+    const ip = el ? el.textContent.trim() : '157.50.93.133';
+    navigator.clipboard.writeText(ip).then(() => {
+        showGlobalToast(`📋 Copied Public IP: <b>${ip}</b>! Add it to smartapi.angelone.in Allowed IP`, 'info');
+    }).catch(() => {
+        prompt('Copy your Public IP:', ip);
+    });
+}
+
 async function autoConnect() {
     const r = await fetch('/api/login', {method:'POST'});
     const d = await r.json();
@@ -2625,7 +2644,12 @@ async function autoConnect() {
     if (d.success) {
         badge.className = 'status-badge status-connected';
         badge.textContent = '● Angel One Connected';
-        if (d.ip) document.getElementById('display-ip').textContent = d.ip;
+        if (d.ip) {
+            const dip = document.getElementById('display-ip');
+            if (dip) dip.textContent = d.ip;
+            const cdip = document.getElementById('cfg-display-ip');
+            if (cdip) cdip.textContent = d.ip;
+        }
         loadBalance();
         loadPositions();
     } else {
@@ -2659,7 +2683,12 @@ async function saveAndLogin() {
     if (d.success) {
         badge.className = 'status-badge status-connected';
         badge.textContent = '● Angel One Connected';
-        if (d.ip) document.getElementById('display-ip').textContent = d.ip;
+        if (d.ip) {
+            const dip = document.getElementById('display-ip');
+            if (dip) dip.textContent = d.ip;
+            const cdip = document.getElementById('cfg-display-ip');
+            if (cdip) cdip.textContent = d.ip;
+        }
         loadBalance();
         loadPositions();
     }
@@ -3448,7 +3477,22 @@ async function executeModalOrder() {
             // Global floating toast on dashboard
             showGlobalToast(`🎉 Order Placed: <b>${d.symbol || sym}</b> (${d.qty || qty} shs) | ID: ${d.order_id} | SL: ₹${parseFloat(d.sl_price || sl).toFixed(2)}`, 'success');
         } else {
-            alertBox.textContent = d.message || 'Order failed';
+            let errMsg = d.message || 'Order failed';
+            if (errMsg.toLowerCase().includes('not a registered ip') || errMsg.toLowerCase().includes('registered ip') || errMsg.toLowerCase().includes('ip rejection')) {
+                const curIp = document.getElementById('display-ip') ? document.getElementById('display-ip').textContent.trim() : '157.50.93.133';
+                alertBox.innerHTML = `
+                    <div style="text-align:left; line-height:1.5;">
+                        <b style="color:#ef4444; font-size:13px;">❌ IP NOT REGISTERED IN ANGEL ONE!</b><br>
+                        Angel One blocked this order &amp; SL because your Internet IP (<b style="color:#fff; text-decoration:underline; cursor:pointer;" onclick="copyIP()">${curIp}</b>) is not added in SmartAPI portal.<br><br>
+                        <b>👉 Quick Fix (30 seconds):</b><br>
+                        1. Open <a href="https://smartapi.angelone.in/" target="_blank" style="color:#60a5fa; text-decoration:underline; font-weight:bold;">smartapi.angelone.in</a> &gt; My Apps<br>
+                        2. Click Edit App &gt; <b>Allowed IP</b><br>
+                        3. Add <b style="color:#fde047;">${curIp}</b> and click Save!
+                    </div>
+                `;
+            } else {
+                alertBox.textContent = errMsg;
+            }
             alertBox.className = 'alert-box alert-err';
             if (btnSubmit) {
                 btnSubmit.disabled = false;
