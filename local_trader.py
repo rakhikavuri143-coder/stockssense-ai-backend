@@ -1212,17 +1212,23 @@ def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty:
         sl = min(sl, round(p + max_price_move, 2))
 
     LOCAL_SL_TRACKER[clean_sym] = {
-        "symbol":       clean_sym,
-        "symbol_token": str(symbol_token),
-        "action":       act,
-        "qty":          q,
-        "entry_price":  p,
-        "stop_loss":    sl,
-        "target1":      float(target1 or 0),
-        "target2":      float(target2 or 0),
-        "registered_at": time.time()
+        "symbol":              clean_sym,
+        "symbol_token":        str(symbol_token),
+        "action":              act,
+        "qty":                 q,
+        "entry_price":         p,
+        "stop_loss":           sl,
+        "initial_sl":          sl,
+        "target1":             float(target1 or 0),
+        "target2":             float(target2 or 0),
+        "target_150_price":    0.0,
+        "sl_order_id":         None,
+        "target_order_id":     None,
+        "converted_to_target": False,
+        "registered_at":       time.time()
     }
-    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300)")
+    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300 | Target ₹150 Conversion Guard Active)")
+
 
 
 def _local_sl_monitor_thread():
@@ -1347,10 +1353,16 @@ def _local_sl_monitor_thread():
 
                     # Decide SL price from tracker or ₹300 cap
                     guard_sl_info = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(f"{sym}-EQ") or LOCAL_SL_TRACKER.get(sym.replace("-EQ", "")) or {}
+                    if guard_sl_info.get("converted_to_target"):
+                        print(f"ℹ️ {sym}: Already converted to Target Limit order at ₹150 level. Skipping delayed SL placement.")
+                        SL_AUTO_PLACED[sym] = True
+                        continue
+
                     auto_sl_price = guard_sl_info.get("stop_loss", 0)
                     if (auto_sl_price <= 0) and avg_p > 0:
                         max_move = 300.0 / max(1, pos_qty)
                         auto_sl_price = round(avg_p - max_move if pos_act == "BUY" else avg_p + max_move, 2)
+
 
                     # Check order book: is there already an open STOPLOSS order for this symbol?
                     ob_res = get_order_book()
@@ -1446,8 +1458,79 @@ def _local_sl_monitor_thread():
                 if cmp_price <= 0:
                     continue
 
-                # ── STEP 2: Zero-Risk Dynamic Profit Lock (On T1 Hit, SL -> Entry Price) ──
-                if target1 > 0 and not guard_info.get("t1_trailed"):
+                # ── STEP 1: Compute Live P&L ──
+                if action == "BUY":
+                    live_pnl = (cmp_price - avg_price) * qty
+                else:
+                    live_pnl = (avg_price - cmp_price) * qty
+
+                # ── STEP 2: ₹100 PROFIT REACHED -> CONVERT SL TO TARGET ₹150 LIMIT ORDER ──
+                if live_pnl >= 100.0 and not guard_info.get("converted_to_target"):
+                    guard_info["converted_to_target"] = True
+                    print(f"🎯 ₹100 PROFIT HIT for {sym}! (Current P&L: +₹{live_pnl:.2f}). Converting SL to Target ₹150 Limit Order...")
+
+                    # 1. Cancel existing pending exchange SL order
+                    old_sl_id = guard_info.get("sl_order_id")
+                    if old_sl_id:
+                        try:
+                            print(f"🗑️ Cancelling Exchange SL Order {old_sl_id} for {sym} to switch to Target Order...")
+                            cancel_smartapi_order(old_sl_id, variety="STOPLOSS")
+                        except Exception as _ce:
+                            print(f"⚠️ Cancel SL error: {_ce}")
+                        guard_info["sl_order_id"] = None
+
+                    # 2. Calculate Target Price for ₹150 Profit (rounded to NSE 0.05 tick size)
+                    target_pts = 150.0 / max(1, qty)
+                    target_raw = (avg_price + target_pts) if action == "BUY" else (avg_price - target_pts)
+                    target_price = round(round(target_raw / 0.05) * 0.05, 2)
+                    guard_info["target_150_price"] = target_price
+
+                    # 3. Place new exchange TARGET LIMIT order
+                    tgt_order_id = None
+                    pos_order_tok = tok or pos.get("symboltoken") or ""
+                    if not pos_order_tok or str(pos_order_tok).strip() in ("", "None", "0"):
+                        pos_order_tok = STOCK_TOKENS.get(sym) or STOCK_TOKENS.get(sym.replace("-EQ", ""))
+
+                    if pos_order_tok:
+                        try:
+                            tgt_res = place_order(
+                                symbol=sym,
+                                symbol_token=str(pos_order_tok),
+                                action=reverse_action,
+                                qty=qty,
+                                price=target_price,
+                                order_type="LIMIT",
+                                product="INTRADAY"
+                            )
+                            if tgt_res.get("success"):
+                                tgt_order_id = tgt_res.get("order_id") or tgt_res.get("data", {}).get("orderid")
+                                guard_info["target_order_id"] = tgt_order_id
+                                print(f"✅ Exchange Target Limit Order Placed for {sym}: Order ID {tgt_order_id} @ ₹{target_price:.2f}")
+                            else:
+                                print(f"⚠️ Exchange Target Order response: {tgt_res}")
+                        except Exception as _te:
+                            print(f"⚠️ Exchange Target Order error: {_te}")
+
+                    # 4. Trail local emergency SL to Entry Price (Cost-to-Cost / Breakeven)
+                    guard_info["stop_loss"] = avg_price
+                    sl_price = avg_price
+                    guard_info["t1_trailed"] = True
+
+                    # 5. Telegram Notification
+                    tgt_note = f"Order ID: <code>{tgt_order_id}</code>" if tgt_order_id else "Local Surveillance Active"
+                    send_telegram_message(
+                        f"🎯 <b>₹100 PROFIT HIT — SL CONVERTED TO TARGET!</b>\n\n"
+                        f"• <b>Symbol:</b> {sym}\n"
+                        f"• <b>Current P&L:</b> +₹{live_pnl:.2f}\n"
+                        f"• <b>Status:</b> Pending SL Cancelled ❌\n"
+                        f"• <b>New Target Order:</b> LIMIT SELL @ ₹{target_price:.2f} (+₹150 Goal) 🎯\n"
+                        f"• <b>Exchange Order:</b> {tgt_note}\n"
+                        f"• <b>Zero-Risk Lock:</b> SL moved to Entry ₹{avg_price:.2f} (Breakeven) 🛡️\n"
+                        f"• <b>Capital:</b> 100% Protected (Zero Loss Possible)!"
+                    )
+
+                # ── STEP 2B: Zero-Risk Dynamic Profit Lock for T1 if not converted ──
+                elif target1 > 0 and not guard_info.get("t1_trailed") and not guard_info.get("converted_to_target"):
                     t1_hit = (action == "BUY" and cmp_price >= target1) or (action == "SELL" and cmp_price <= target1)
                     if t1_hit:
                         guard_info["stop_loss"] = avg_price
@@ -1462,17 +1545,17 @@ def _local_sl_monitor_thread():
                             f"• <b>Status:</b> Risk is now <b>ZERO (Cost-to-Cost)</b>! 🎯"
                         )
 
-                # ── STEP 3: Compute Live P&L ──
-                if action == "BUY":
-                    live_pnl = (cmp_price - avg_price) * qty
-                else:
-                    live_pnl = (avg_price - cmp_price) * qty
-
                 should_exit = False
                 exit_reason = ""
 
+                # Trigger 0: Dedicated ₹150 Target Profit Hit!
+                tgt_150_p = guard_info.get("target_150_price", 0)
+                if live_pnl >= 148.0 or (tgt_150_p > 0 and ((action == "BUY" and cmp_price >= tgt_150_p) or (action == "SELL" and cmp_price <= tgt_150_p))):
+                    should_exit = True
+                    exit_reason = f"TARGET ₹150 PROFIT HIT (P&L: +₹{live_pnl:.2f} | CMP ₹{cmp_price:.2f})"
+
                 # Trigger 1: EOD Square-off at 3:10 PM
-                if is_eod:
+                elif is_eod:
                     should_exit = True
                     exit_reason = "EOD_AUTO_SQUAREOFF (3:10 PM)"
 
@@ -1481,13 +1564,13 @@ def _local_sl_monitor_thread():
                     should_exit = True
                     exit_reason = f"HARD ₹300 LOSS CAP (Current Loss: -₹{abs(live_pnl):.2f})"
 
-                # Trigger 3: SL Price Hit (or Trailed Breakeven SL)
+                # Trigger 3: SL Price Hit (or Trailed Breakeven SL after ₹100 conversion)
                 elif action == "BUY" and sl_price > 0 and cmp_price <= sl_price:
                     should_exit = True
-                    exit_reason = f"SL/BREAKEVEN HIT (CMP ₹{cmp_price:.2f} <= SL ₹{sl_price:.2f})"
+                    exit_reason = f"ZERO-RISK BREAKEVEN HIT (CMP ₹{cmp_price:.2f} <= Entry ₹{sl_price:.2f})" if guard_info.get("converted_to_target") else f"SL HIT (CMP ₹{cmp_price:.2f} <= SL ₹{sl_price:.2f})"
                 elif action == "SELL" and sl_price > 0 and cmp_price >= sl_price:
                     should_exit = True
-                    exit_reason = f"SL/BREAKEVEN HIT (CMP ₹{cmp_price:.2f} >= SL ₹{sl_price:.2f})"
+                    exit_reason = f"ZERO-RISK BREAKEVEN HIT (CMP ₹{cmp_price:.2f} >= Entry ₹{sl_price:.2f})" if guard_info.get("converted_to_target") else f"SL HIT (CMP ₹{cmp_price:.2f} >= SL ₹{sl_price:.2f})"
 
                 # Trigger 4: Target 2 Hit (Full Profit Lock)
                 elif action == "BUY" and target2 > 0 and cmp_price >= target2:
@@ -1500,20 +1583,51 @@ def _local_sl_monitor_thread():
                 # ── STEP 4: Execute Auto-Squareoff! ──
                 if should_exit:
                     print(f"🚨 AUTO SQUARE-OFF TRIGGERED for {sym}: {exit_reason}")
+
+                    # Check if target order was already filled by exchange!
+                    already_filled = False
+                    tgt_oid = guard_info.get("target_order_id")
+                    if tgt_oid:
+                        try:
+                            ob_orders = get_order_book().get("orders", [])
+                            for o in ob_orders:
+                                if str(o.get("orderid")) == str(tgt_oid):
+                                    st_val = (o.get("orderstatus") or o.get("status") or "").upper()
+                                    if st_val in ("COMPLETE", "FILLED"):
+                                        print(f"🎉 Target Order {tgt_oid} already FILLED on exchange!")
+                                        already_filled = True
+                                        break
+                        except Exception:
+                            pass
+
                     # Cancel any pending exchange SL order to prevent duplicate sell
                     sl_oid = guard_info.get("sl_order_id")
                     if sl_oid:
-                        cancel_smartapi_order(sl_oid)
+                        try:
+                            cancel_smartapi_order(sl_oid, variety="STOPLOSS")
+                        except Exception:
+                            pass
 
-                    res = place_order(
-                        symbol=sym,
-                        symbol_token=tok,
-                        action=reverse_action,
-                        qty=qty,
-                        price=0,
-                        order_type="MARKET",
-                        product="INTRADAY"
-                    )
+                    # Cancel any pending exchange Target order if not already filled
+                    if tgt_oid and not already_filled:
+                        try:
+                            cancel_smartapi_order(tgt_oid, variety="NORMAL")
+                        except Exception:
+                            pass
+
+                    if not already_filled:
+                        res = place_order(
+                            symbol=sym,
+                            symbol_token=tok,
+                            action=reverse_action,
+                            qty=qty,
+                            price=0,
+                            order_type="MARKET",
+                            product="INTRADAY"
+                        )
+                    else:
+                        res = {"success": True, "message": "Position filled by exchange target limit order"}
+
                     print(f"⚡ Auto Square-Off Result: {res}")
                     send_telegram_message(
                         f"🚨 <b>AUTO SQUARE-OFF EXECUTED</b>\n\n"
@@ -1531,6 +1645,7 @@ def _local_sl_monitor_thread():
                     POSITION_FIRST_SEEN.pop(clean_sym, None)
                     SL_AUTO_PLACED.pop(sym, None)
                     SL_AUTO_PLACED.pop(clean_sym, None)
+
 
 
         except Exception as ex:
