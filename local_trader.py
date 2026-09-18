@@ -4087,16 +4087,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
 
+def get_local_lan_ip():
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
+
+
 def main():
     PORT = 8888
     my_ip = get_my_ip()
+    lan_ip = get_local_lan_ip()
     print("=" * 65)
     print("  ⚡ StocksSense AI — Local Live Trader Pro")
     print(f"  🌐 Public Registered IP : {my_ip}")
-    print(f"  🚀 Local Web Dashboard   : http://localhost:{PORT}")
+    print(f"  💻 PC Web Dashboard      : http://localhost:{PORT}")
+    print(f"  📱 Mobile Hotspot Link   : http://{lan_ip}:{PORT}")
     print("=" * 65)
     
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+
     try:
         webbrowser.open(f"http://localhost:{PORT}")
     except:
