@@ -792,14 +792,27 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
         return res
 
 
+def get_proxy_opener():
+    proxy_url = config.get("proxy_url")
+    ctx = ssl.create_default_context()
+    if proxy_url:
+        proxy_handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+        https_handler = urllib.request.HTTPSHandler(context=ctx)
+        return urllib.request.build_opener(proxy_handler, https_handler)
+    https_handler = urllib.request.HTTPSHandler(context=ctx)
+    return urllib.request.build_opener(https_handler)
+
+
 def get_my_ip():
+    if config.get("static_ip"):
+        return config["static_ip"]
     try:
         req = urllib.request.Request("https://api.ipify.org?format=json")
-        ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req, context=ctx, timeout=4) as resp:
+        opener = get_proxy_opener()
+        with opener.open(req, timeout=5) as resp:
             return json.loads(resp.read().decode())["ip"]
     except:
-        return "157.50.91.3"
+        return config.get("static_ip", "178.92.40.115")
 
 
 def generate_totp(secret: str):
@@ -814,9 +827,9 @@ def generate_totp(secret: str):
 def api_call(url, payload=None, headers=None, method="POST"):
     data = json.dumps(payload).encode("utf-8") if payload else None
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
-    ctx = ssl.create_default_context()
+    opener = get_proxy_opener()
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+        with opener.open(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
@@ -826,6 +839,7 @@ def api_call(url, payload=None, headers=None, method="POST"):
             return {"status": False, "message": f"HTTP {e.code}: {body}"}
     except Exception as e:
         return {"status": False, "message": str(e)}
+
 
 
 def login_smartapi():
@@ -2043,8 +2057,9 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="logo-area">
                 <h1>⚡ StocksSense AI — Local Live Trader Pro</h1>
                 <p>
-                    Outbound IP: <span class="ip-pill" id="display-ip" onclick="copyIP()" style="cursor:pointer;" title="Click to copy IP for smartapi.angelone.in">157.50.93.133</span>
-                    <span>● Angel One SmartAPI Bridge</span>
+                    Outbound IP: <span class="ip-pill" id="display-ip" onclick="copyIP()" style="cursor:pointer; background:#065f46; color:#34d399; border:1px solid #059669;" title="Click to copy Dedicated Static IP for smartapi.angelone.in">178.92.40.115 (Static 🟢)</span>
+                    <span>● StaticIP.in Dedicated Proxy Bridge</span>
+
                 </p>
             </div>
             <div style="display:flex; align-items:center; gap:12px;">
@@ -2118,11 +2133,12 @@ HTML_PAGE = """<!DOCTYPE html>
                         <span>🔐 SmartAPI Credentials</span>
                         <span style="font-size:11px; color:var(--text-muted);">Saved on PC</span>
                     </div>
-                    <div style="background:rgba(234, 179, 8, 0.1); border:1px solid rgba(234, 179, 8, 0.3); border-radius:8px; padding:10px; margin-bottom:12px; font-size:11px; color:#fde047; line-height:1.4;">
-                        🛡️ <b>Angel One Static IP Requirement:</b><br>
-                        Your current IP is <b id="cfg-display-ip" style="color:#fff; text-decoration:underline; cursor:pointer;" onclick="copyIP()" title="Click to copy">157.50.93.133</b> [📋 Click to Copy].<br>
-                        Angel One only permits automated orders &amp; Stop-Loss from registered IPs. Please verify this IP is added in <a href="https://smartapi.angelone.in/" target="_blank" style="color:#60a5fa; text-decoration:underline; font-weight:bold;">smartapi.angelone.in</a>.
+                    <div style="background:rgba(16, 185, 129, 0.1); border:1px solid rgba(16, 185, 129, 0.4); border-radius:8px; padding:10px; margin-bottom:12px; font-size:11px; color:#34d399; line-height:1.4;">
+                        🛡️ <b>StaticIP.in Dedicated Proxy Active:</b><br>
+                        Your fixed dedicated IP is <b id="cfg-display-ip" style="color:#fff; text-decoration:underline; cursor:pointer;" onclick="copyIP()" title="Click to copy">178.92.40.115</b> [📋 Click to Copy].<br>
+                        Please whitelist this IP in <a href="https://smartapi.angelone.in/" target="_blank" style="color:#60a5fa; text-decoration:underline; font-weight:bold;">smartapi.angelone.in</a> &gt; My Apps. It never changes!
                     </div>
+
                     <label>Client Code</label>
                     <input id="cfg_client" placeholder="AACL535586">
                     <label>Password / MPIN</label>
@@ -2869,14 +2885,15 @@ async function switchMode(mode, save = true) {
 }
 
 function copyIP() {
-    const el = document.getElementById('display-ip');
-    const ip = el ? el.textContent.trim() : '157.50.93.133';
+    const el = document.getElementById('cfg-display-ip') || document.getElementById('display-ip');
+    let ip = el ? el.textContent.trim().split(' ')[0] : '178.92.40.115';
     navigator.clipboard.writeText(ip).then(() => {
-        showGlobalToast(`📋 Copied Public IP: <b>${ip}</b>! Add it to smartapi.angelone.in Allowed IP`, 'info');
+        showGlobalToast(`📋 Copied Static IP: <b>${ip}</b>! Add it to smartapi.angelone.in Allowed IP`, 'info');
     }).catch(() => {
-        prompt('Copy your Public IP:', ip);
+        prompt('Copy your Static IP:', ip);
     });
 }
+
 
 async function autoConnect() {
     const r = await fetch('/api/login', {method:'POST'});
@@ -3743,8 +3760,9 @@ async function executeModalOrder() {
         } else {
             let errMsg = d.message || 'Order failed';
             if (errMsg.toLowerCase().includes('not a registered ip') || errMsg.toLowerCase().includes('registered ip') || errMsg.toLowerCase().includes('ip rejection')) {
-                const curIp = document.getElementById('display-ip') ? document.getElementById('display-ip').textContent.trim() : '157.50.93.133';
+                const curIp = '178.92.40.115';
                 alertBox.innerHTML = `
+
                     <div style="text-align:left; line-height:1.5;">
                         <b style="color:#ef4444; font-size:13px;">❌ IP NOT REGISTERED IN ANGEL ONE!</b><br>
                         Angel One blocked this order &amp; SL because your Internet IP (<b style="color:#fff; text-decoration:underline; cursor:pointer;" onclick="copyIP()">${curIp}</b>) is not added in SmartAPI portal.<br><br>
