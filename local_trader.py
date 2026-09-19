@@ -1240,16 +1240,18 @@ def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty:
         "target_order_id":     None,
         "converted_to_target": False,
         "peak_pnl":            0.0,
+        "peak_price":          p,
         "reversal_alert_sent": False,
         "last_reversal_check": 0.0,
         "registered_at":       time.time()
     }
-    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300 | Target ₹150 Conversion Guard Active | Trailing Peak Lock Active)")
+    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300 | Target ₹150 Conversion Guard Active | Dynamic 20% Trailing Peak Lock Active)")
 
 
 
 LAST_SATURDAY_AUDIT_DATE = None
 LOCAL_PAPER_PEAKS: dict[int, float] = {}
+LOCAL_PAPER_PEAK_PRICES: dict[int, float] = {}
 LOCAL_PAPER_REVERSALS: dict[int, float] = {}
 LOCAL_PAPER_NOTIFIED_REV: set[int] = set()
 
@@ -1335,8 +1337,23 @@ def _local_sl_monitor_thread():
                                 except Exception:
                                     pass
 
-                            # ── Filter 2: Trailing Peak Profit Lock (Peak >= 120 and drops >= 30) ──
-                            if curr_peak >= 120.0 and (curr_peak - pnl) >= 30.0 and pnl > 0:
+                            # ── Filter 2: Dynamic 20% Trailing Peak Profit Lock (Noise Protected) ──
+                            p_peak = LOCAL_PAPER_PEAK_PRICES.get(pt.id, cmp_price)
+                            if act == "BUY":
+                                if cmp_price > p_peak or p_peak <= 0:
+                                    p_peak = cmp_price
+                                    LOCAL_PAPER_PEAK_PRICES[pt.id] = p_peak
+                                p_drop = p_peak - cmp_price
+                            else:
+                                if cmp_price < p_peak or p_peak <= 0:
+                                    p_peak = cmp_price
+                                    LOCAL_PAPER_PEAK_PRICES[pt.id] = p_peak
+                                p_drop = cmp_price - p_peak
+
+                            pullback_allowed = max(30.0, curr_peak * 0.20)
+                            min_price_buf = max(0.20, ep * 0.002)
+
+                            if curr_peak >= 120.0 and (curr_peak - pnl) >= pullback_allowed and pnl > 0 and p_drop >= min_price_buf:
                                 pt.status = "PROFIT_LOCK"
                                 pt.exit_price = cmp_price
                                 pt.pnl = pnl
@@ -1344,9 +1361,10 @@ def _local_sl_monitor_thread():
                                 pt.closed_at = datetime.utcnow()
                                 db.commit()
                                 LOCAL_PAPER_PEAKS.pop(pt.id, None)
+                                LOCAL_PAPER_PEAK_PRICES.pop(pt.id, None)
                                 LOCAL_PAPER_REVERSALS.pop(pt.id, None)
                                 LOCAL_PAPER_NOTIFIED_REV.discard(pt.id)
-                                send_telegram_message(f"💰 <b>PAPER TRADE TRAILING PROFIT LOCKED</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nLocked P&L: +₹{pnl:.2f} (Peak: +₹{curr_peak:.2f})")
+                                send_telegram_message(f"💰 <b>PAPER TRADE DYNAMIC 20% PROFIT LOCKED</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nLocked P&L: +₹{pnl:.2f} (Peak: +₹{curr_peak:.2f})")
 
                             # SL Hit check
                             elif (act == "BUY" and sl_price > 0 and cmp_price <= sl_price) or \
@@ -1528,6 +1546,7 @@ def _local_sl_monitor_thread():
                         "target_order_id":     None,
                         "converted_to_target": False,
                         "peak_pnl":            0.0,
+                        "peak_price":          avg_price,
                         "reversal_alert_sent": False,
                         "last_reversal_check": 0.0,
                         "registered_at":       time.time()
@@ -1571,9 +1590,21 @@ def _local_sl_monitor_thread():
                 else:
                     live_pnl = (avg_price - cmp_price) * qty
 
-                # ── STEP 1B: Track High-Water Mark (Peak P&L) ──
+                # ── STEP 1B: Track High-Water Mark (Peak P&L & Peak Price) ──
                 current_peak = max(guard_info.get("peak_pnl", 0.0), live_pnl)
                 guard_info["peak_pnl"] = round(current_peak, 2)
+
+                peak_price = guard_info.get("peak_price", cmp_price)
+                if action == "BUY":
+                    if cmp_price > peak_price or peak_price <= 0:
+                        peak_price = cmp_price
+                        guard_info["peak_price"] = peak_price
+                    price_drop_from_peak = peak_price - cmp_price
+                else:
+                    if cmp_price < peak_price or peak_price <= 0:
+                        peak_price = cmp_price
+                        guard_info["peak_price"] = peak_price
+                    price_drop_from_peak = cmp_price - peak_price
 
                 # ── STEP 1C: FILTER 3 - 5-Minute Technical Reversal Alert (Telegram Notification Only) ──
                 # NOTE: Does NOT auto-close trade! Sends an early warning so user can manually decide.
@@ -1719,12 +1750,17 @@ def _local_sl_monitor_thread():
                     should_exit = True
                     exit_reason = f"TARGET ₹150 PROFIT HIT (P&L: +₹{live_pnl:.2f} | CMP ₹{cmp_price:.2f})"
 
-                # Trigger 0B: FILTER 2 - Trailing Peak Profit Lock (High-Water Mark)
+                # Trigger 0B: FILTER 2 - Dynamic 20% Trailing Peak Profit Lock (Noise Protected)
                 # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
-                # When peak profit touched >= ₹120 and pulls back by ₹30 from its peak -> Exit immediately to lock profit!
-                elif current_peak >= 120.0 and live_pnl <= (current_peak - 30.0) and live_pnl > 0:
+                # Peak ₹150 -> 20% pullback (₹30) -> Locks +₹120
+                # Peak ₹300 -> 20% pullback (₹60) -> Locks +₹240
+                # Peak ₹500 -> 20% pullback (₹100) -> Locks +₹400
+                pullback_allowed = max(30.0, current_peak * 0.20)
+                min_price_buffer = max(0.20, avg_price * 0.002)  # Noise filter: min 4-5 ticks or 0.2% price move
+
+                if current_peak >= 120.0 and live_pnl <= (current_peak - pullback_allowed) and live_pnl > 0 and price_drop_from_peak >= min_price_buffer:
                     should_exit = True
-                    exit_reason = f"TRAILING PEAK PROFIT LOCK (Peak: +₹{current_peak:.2f} ➔ Dropped to +₹{live_pnl:.2f} | Locked +₹{live_pnl:.2f} Profit)"
+                    exit_reason = f"DYNAMIC 20% PEAK PROFIT LOCK (Peak: +₹{current_peak:.2f} ➔ Retraced 20% to +₹{live_pnl:.2f} | Locked +₹{live_pnl:.2f} Profit)"
 
                 # Trigger 1: EOD Square-off at 3:10 PM
                 elif is_eod:

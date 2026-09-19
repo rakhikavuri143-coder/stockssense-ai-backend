@@ -343,6 +343,7 @@ def close_live_position(
 
 
 _live_peak_pnl: dict[int, float] = {}
+_live_peak_price: dict[int, float] = {}
 _live_reversal_notified: set[int] = set()
 _live_last_reversal_check_ts: dict[int, float] = {}
 
@@ -351,7 +352,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
     Check open live positions against live prices and exit on triggers.
     Runs in the 15-second scheduler job.
     """
-    global _live_peak_pnl, _live_reversal_notified, _live_last_reversal_check_ts
+    global _live_peak_pnl, _live_peak_price, _live_reversal_notified, _live_last_reversal_check_ts
     open_trades = db.query(LiveTrade).filter(LiveTrade.status == "OPEN").all()
     results = []
     
@@ -374,6 +375,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
             res = close_live_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
+            _live_peak_price.pop(trade_id, None)
             _live_reversal_notified.discard(trade_id)
             _live_last_reversal_check_ts.pop(trade_id, None)
             continue
@@ -386,6 +388,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="CIRCUIT_EMERGENCY_EXIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_peak_price.pop(trade_id, None)
                 _live_reversal_notified.discard(trade_id)
                 _live_last_reversal_check_ts.pop(trade_id, None)
                 logger.info("🚨 Guard #17 Live: Emergency exit triggered for %s.", symbol)
@@ -399,26 +402,45 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
             res = close_live_position(db, symbol, price, exit_reason="HARD_SL_BREAKER")
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
+            _live_peak_price.pop(trade_id, None)
             _live_reversal_notified.discard(trade_id)
             _live_last_reversal_check_ts.pop(trade_id, None)
             logger.info("🚨 Hard ₹300 SL Circuit Breaker triggered for LIVE trade %s (PnL: ₹%.2f). Squareoff executed.", symbol, current_pnl)
             continue
 
-        # ══ FILTER 2: TRAILING PEAK PROFIT LOCK (+₹120 PEAK, ₹30 TRAIL PULLBACK) ══
+        # ══ FILTER 2: DYNAMIC 20% TRAILING PEAK PROFIT LOCK (Noise Protected) ══
         # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
-        # Once trade touches >= ₹120 peak, if it pulls back by ₹30 -> Exit immediately!
+        # Peak ₹150 -> 20% pullback (₹30) -> Locks +₹120
+        # Peak ₹300 -> 20% pullback (₹60) -> Locks +₹240
+        # Peak ₹500 -> 20% pullback (₹100) -> Locks +₹400
         peak_pnl_val = _live_peak_pnl.get(trade_id, 0.0)
         if current_pnl > peak_pnl_val:
             _live_peak_pnl[trade_id] = current_pnl
             peak_pnl_val = current_pnl
 
-        if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl) >= 30.0 and current_pnl > 0:
+        peak_price = _live_peak_price.get(trade_id, price)
+        if trade.action == "BUY":
+            if price > peak_price or peak_price <= 0:
+                peak_price = price
+                _live_peak_price[trade_id] = peak_price
+            price_drop = peak_price - price
+        else:
+            if price < peak_price or peak_price <= 0:
+                peak_price = price
+                _live_peak_price[trade_id] = peak_price
+            price_drop = price - peak_price
+
+        pullback_allowed = max(30.0, peak_pnl_val * 0.20)
+        min_price_buffer = max(0.20, trade.entry_price * 0.002)
+
+        if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl) >= pullback_allowed and current_pnl > 0 and price_drop >= min_price_buffer:
             res = close_live_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
+            _live_peak_price.pop(trade_id, None)
             _live_reversal_notified.discard(trade_id)
             _live_last_reversal_check_ts.pop(trade_id, None)
-            logger.info("💰 LIVE Trailing Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl, current_pnl)
+            logger.info("💰 LIVE Dynamic 20% Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl, current_pnl)
             continue
 
         # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
@@ -444,6 +466,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_peak_price.pop(trade_id, None)
                 _live_reversal_notified.discard(trade_id)
                 _live_last_reversal_check_ts.pop(trade_id, None)
             elif price >= trade.target1:
@@ -452,6 +475,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_peak_price.pop(trade_id, None)
                 _live_reversal_notified.discard(trade_id)
                 _live_last_reversal_check_ts.pop(trade_id, None)
         elif trade.action == "SELL":
@@ -459,6 +483,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_peak_price.pop(trade_id, None)
                 _live_reversal_notified.discard(trade_id)
                 _live_last_reversal_check_ts.pop(trade_id, None)
             elif price <= trade.target1:
@@ -467,6 +492,7 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_peak_price.pop(trade_id, None)
                 _live_reversal_notified.discard(trade_id)
                 _live_last_reversal_check_ts.pop(trade_id, None)
 
