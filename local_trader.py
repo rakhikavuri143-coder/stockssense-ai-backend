@@ -1245,8 +1245,12 @@ def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty:
 
 
 
+LAST_SATURDAY_AUDIT_DATE = None
+
+
 def _local_sl_monitor_thread():
     """Background daemon thread running every 5 seconds to enforce SL and ₹300 Loss Cap."""
+    global LAST_SATURDAY_AUDIT_DATE
     import threading
     import time
     from datetime import datetime, timezone, timedelta
@@ -1257,8 +1261,25 @@ def _local_sl_monitor_thread():
     while True:
         try:
             time.sleep(5)
+
+            # ── Saturday Auto-Quant Audit & Strategy Self-Tuning (Runs Sat 10:00 AM IST) ──
+            ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+            if ist_now.weekday() == 5 and ist_now.hour >= 10 and LAST_SATURDAY_AUDIT_DATE != ist_now.date():
+                LAST_SATURDAY_AUDIT_DATE = ist_now.date()
+                if DB_AVAILABLE:
+                    try:
+                        from backend.weekly_optimizer import run_weekly_quant_audit
+                        db_audit = SessionLocal()
+                        print("🤖 [Saturday Auto-Tuning] Running weekly quant audit & self-tuning...")
+                        audit_res = run_weekly_quant_audit(db_audit)
+                        db_audit.close()
+                        print(f"✅ [Saturday Auto-Tuning] Audit complete: {audit_res.get('last_audit_summary', '')}")
+                    except Exception as _ae:
+                        print(f"⚠️ Saturday Auto-Tuning error: {_ae}")
+
             # 1. Paper Trades Monitor (Runs even if Angel One is not logged in)
             if DB_AVAILABLE:
+
                 try:
                     db = SessionLocal()
                     open_pts = db.query(PaperTrade).filter(PaperTrade.status == "OPEN").all()
@@ -3962,6 +3983,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(run_deep_ai_scan(cat))
         elif path == "/api/ultra-sniper":
             self._send_json(run_ultra_sniper_scan())
+        elif path == "/api/strategy-config":
+            from backend.weekly_optimizer import get_strategy_config
+            self._send_json(get_strategy_config())
+        elif path == "/api/run-weekly-audit":
+            if DB_AVAILABLE:
+                from backend.database import SessionLocal
+                from backend.weekly_optimizer import run_weekly_quant_audit
+                db = SessionLocal()
+                try:
+                    res = run_weekly_quant_audit(db)
+                    self._send_json({"success": True, "report": res})
+                except Exception as e:
+                    self._send_json({"success": False, "error": str(e)})
+                finally:
+                    db.close()
+            else:
+                self._send_json({"success": False, "error": "Database not available"})
+
         elif path == "/api/ai-status":
             self._send_json({"deep_ai_available": DEEP_AI_AVAILABLE})
         elif path == "/api/watchlist":

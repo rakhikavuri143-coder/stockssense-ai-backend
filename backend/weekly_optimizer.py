@@ -100,11 +100,15 @@ def run_weekly_quant_audit(db_session) -> Dict[str, Any]:
 
     trades = []
     try:
-        from backend.database import PaperTrade
-        # Fetch only closed paper trades in the last 7 days
-        raw_trades = db_session.query(PaperTrade).filter(
+        from backend.database import PaperTrade, LiveTrade
+        # Fetch both paper trades and live trades in the last 7 days
+        raw_paper = db_session.query(PaperTrade).filter(
             PaperTrade.trade_date >= start_date.date()
         ).all()
+        raw_live = db_session.query(LiveTrade).filter(
+            LiveTrade.trade_date >= start_date.date()
+        ).all()
+        raw_trades = raw_paper + raw_live
 
         # Extract primitive values into lightweight dicts to keep memory <100KB
         for t in raw_trades:
@@ -117,9 +121,9 @@ def run_weekly_quant_audit(db_session) -> Dict[str, Any]:
                 "exit_reason": t.status or "UNKNOWN",
                 "trade_date": str(t.trade_date)
             })
-        del raw_trades
+        del raw_paper, raw_live, raw_trades
     except Exception as e:
-        logger.error("Error querying paper trades for weekly audit: %s", e)
+        logger.error("Error querying paper/live trades for weekly audit: %s", e)
 
     total_trades = len(trades)
     closed_trades = [t for t in trades if t["status"] != "OPEN"]
