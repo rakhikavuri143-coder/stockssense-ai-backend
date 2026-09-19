@@ -10,6 +10,7 @@ Tracks virtual trades, portfolio balance, P&L, Target/SL exits dynamically with 
 T1_PROFIT_THRESHOLD = 150.0  # ₹150 flat profit per trade (3 trades × ₹150 = ₹450/day)
 
 import os
+import time
 import logging
 from datetime import datetime, date
 from typing import Optional
@@ -385,6 +386,8 @@ def close_paper_position(
     _t1_notified_trades.discard(trade.id)
     _peak_prices.pop(trade.id, None)
     _peak_pnl.pop(trade.id, None)
+    _paper_reversal_notified.discard(trade.id)
+    _paper_last_reversal_check_ts.pop(trade.id, None)
 
     new_balance, _ = sync_state(db)
 
@@ -415,13 +418,15 @@ def close_paper_position(
 _peak_prices: dict[int, float] = {}
 _peak_pnl:    dict[int, float] = {}   # Tracks peak P&L (₹) per trade for Nifty trailing stop
 _t1_notified_trades: set[int] = set() # Track trade IDs that sent Telegram T1 alert
+_paper_reversal_notified: set[int] = set()
+_paper_last_reversal_check_ts: dict[int, float] = {}
 
 def check_auto_exits(db: Session, live_prices: dict[str, float]):
     """
     Auto-check open positions against live prices.
     Triggers Target 1, Target 2, Stop Loss exits, EOD 3:25 PM Auto-Squareoff, or Trailing Peak Profit Lock automatically.
     """
-    global _peak_prices, _peak_pnl, _t1_notified_trades
+    global _peak_prices, _peak_pnl, _t1_notified_trades, _paper_reversal_notified, _paper_last_reversal_check_ts
     _, open_positions = sync_state(db)
     results = []
     from datetime import timezone, timedelta
@@ -525,21 +530,39 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                         logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_buy, trade_value)
                         continue
 
-            # ══ DYNAMIC TRAILING PROFIT LOCK (+₹400 PEAK ACTIVATION, ₹200 TRAILING FLOOR) ══
+            # ══ FILTER 2: TRAILING PEAK PROFIT LOCK (+₹120 PEAK, ₹30 TRAIL PULLBACK) ══
+            # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
             peak_pnl_val = _peak_pnl.get(trade_id, 0.0)
             if current_pnl_buy > peak_pnl_val:
                 _peak_pnl[trade_id] = current_pnl_buy
                 peak_pnl_val = current_pnl_buy
 
-            if peak_pnl_val >= 400.0:
-                trailing_floor = max(200.0, peak_pnl_val - 200.0)
-                if current_pnl_buy <= trailing_floor:
-                    res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
-                    results.append(res)
-                    _peak_prices.pop(trade_id, None)
-                    _peak_pnl.pop(trade_id, None)
-                    logger.info("💰 Dynamic Profit Lock: %s Peaked at +₹%.0f, Exited at +₹%.0f (Floor: +₹%.0f)", symbol, peak_pnl_val, current_pnl_buy, trailing_floor)
-                    continue
+            if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl_buy) >= 30.0 and current_pnl_buy > 0:
+                res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+                results.append(res)
+                _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
+                _paper_reversal_notified.discard(trade_id)
+                _paper_last_reversal_check_ts.pop(trade_id, None)
+                logger.info("💰 Trailing Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl_buy, current_pnl_buy)
+                continue
+
+            # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
+            # Does NOT close trade. Checks 5m candle & RSI every 45s, alerts user if momentum fades.
+            now_ts = time.time()
+            last_check = _paper_last_reversal_check_ts.get(trade_id, 0.0)
+            if trade_id not in _paper_reversal_notified and (now_ts - last_check >= 45.0):
+                _paper_last_reversal_check_ts[trade_id] = now_ts
+                try:
+                    from backend.loss_guard import check_5m_momentum_reversal
+                    from backend.telegram_alerts import alert_momentum_reversal
+                    rev_info = check_5m_momentum_reversal(symbol, action)
+                    if rev_info.get("reversal_detected"):
+                        _paper_reversal_notified.add(trade_id)
+                        logger.info("⚠️ [FILTER 3 PAPER ALERT] Momentum reversal for %s: %s", symbol, rev_info.get("details"))
+                        alert_momentum_reversal(symbol, action, price, current_pnl_buy, peak_pnl_val, rev_info.get("details", ""))
+                except Exception as _re:
+                    logger.warning("Paper 5m reversal check failed for %s: %s", symbol, _re)
 
             # ══ BUDGET STOCKS SPECIAL RULES ═══════════════════════════════
             if symbol in budget_symbols:
@@ -630,21 +653,39 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                         logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_sell, trade_value)
                         continue
 
-            # ══ DYNAMIC TRAILING PROFIT LOCK (+₹400 PEAK ACTIVATION, ₹200 TRAILING FLOOR) ══
+            # ══ FILTER 2: TRAILING PEAK PROFIT LOCK (+₹120 PEAK, ₹30 TRAIL PULLBACK) ══
+            # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
             peak_pnl_val = _peak_pnl.get(trade_id, 0.0)
             if current_pnl_sell > peak_pnl_val:
                 _peak_pnl[trade_id] = current_pnl_sell
                 peak_pnl_val = current_pnl_sell
 
-            if peak_pnl_val >= 400.0:
-                trailing_floor = max(200.0, peak_pnl_val - 200.0)
-                if current_pnl_sell <= trailing_floor:
-                    res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
-                    results.append(res)
-                    _peak_prices.pop(trade_id, None)
-                    _peak_pnl.pop(trade_id, None)
-                    logger.info("💰 Dynamic Profit Lock: %s Peaked at +₹%.0f, Exited at +₹%.0f (Floor: +₹%.0f)", symbol, peak_pnl_val, current_pnl_sell, trailing_floor)
-                    continue
+            if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl_sell) >= 30.0 and current_pnl_sell > 0:
+                res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+                results.append(res)
+                _peak_prices.pop(trade_id, None)
+                _peak_pnl.pop(trade_id, None)
+                _paper_reversal_notified.discard(trade_id)
+                _paper_last_reversal_check_ts.pop(trade_id, None)
+                logger.info("💰 Trailing Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl_sell, current_pnl_sell)
+                continue
+
+            # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
+            # Does NOT close trade. Checks 5m candle & RSI every 45s, alerts user if momentum fades.
+            now_ts = time.time()
+            last_check = _paper_last_reversal_check_ts.get(trade_id, 0.0)
+            if trade_id not in _paper_reversal_notified and (now_ts - last_check >= 45.0):
+                _paper_last_reversal_check_ts[trade_id] = now_ts
+                try:
+                    from backend.loss_guard import check_5m_momentum_reversal
+                    from backend.telegram_alerts import alert_momentum_reversal
+                    rev_info = check_5m_momentum_reversal(symbol, action)
+                    if rev_info.get("reversal_detected"):
+                        _paper_reversal_notified.add(trade_id)
+                        logger.info("⚠️ [FILTER 3 PAPER ALERT] Momentum reversal for %s: %s", symbol, rev_info.get("details"))
+                        alert_momentum_reversal(symbol, action, price, current_pnl_sell, peak_pnl_val, rev_info.get("details", ""))
+                except Exception as _re:
+                    logger.warning("Paper 5m reversal check failed for %s: %s", symbol, _re)
 
             # ══ BUDGET STOCKS SPECIAL RULES ═══════════════════════════════
             if symbol in budget_symbols:

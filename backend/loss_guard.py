@@ -462,3 +462,66 @@ def run_all_guards(
     return results
 
 
+# ─────────────────────────── GUARD 18: 5-MINUTE TECHNICAL REVERSAL DETECTOR ────────────────────────────
+
+def check_5m_momentum_reversal(symbol: str, action: str) -> dict:
+    """
+    Filter 3 / Guard 18: 5-Minute Technical Reversal Detector
+    Uses lightweight stdlib urllib (zero extra RAM, no heavy pandas/yfinance).
+    Fetches 5m candle data from Yahoo REST API and checks for:
+    - BUY trades: Bearish reversal (Last completed 5m candle is Red + 5m RSI < 50)
+    - SELL trades: Bullish reversal (Last completed 5m candle is Green + 5m RSI > 50)
+    Returns: {"reversal_detected": bool, "details": str, "rsi": float}
+    """
+    import urllib.request
+    import json
+    clean_sym = symbol.replace("-EQ", ".NS").replace("-BE", ".NS")
+    if not clean_sym.endswith(".NS") and not clean_sym.endswith(".BO"):
+        clean_sym = f"{clean_sym}.NS"
+
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?interval=5m&range=1d"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            result = data.get("chart", {}).get("result", [{}])[0]
+            quotes = result.get("indicators", {}).get("quote", [{}])[0]
+            c_list = [c for c in quotes.get("close", []) if c is not None]
+            o_list = [o for o in quotes.get("open", []) if o is not None]
+
+            if len(c_list) >= 15 and len(o_list) >= 1:
+                # Fast 5m RSI calculation
+                diffs = [c_list[i] - c_list[i-1] for i in range(1, len(c_list))]
+                gains = [d for d in diffs if d > 0]
+                losses = [abs(d) for d in diffs if d < 0]
+                avg_gain = sum(gains[-14:]) / 14 if gains else 0.001
+                avg_loss = sum(losses[-14:]) / 14 if losses else 0.001
+                rsi = round(100 - (100 / (1 + (avg_gain / avg_loss))), 1)
+
+                last_c = c_list[-1]
+                last_o = o_list[-1]
+                action_upper = (action or "BUY").upper()
+
+                if action_upper == "BUY":
+                    if last_c < last_o and rsi < 50.0:
+                        return {
+                            "reversal_detected": True,
+                            "details": f"5m Red Candle (₹{last_o:.2f} ➔ ₹{last_c:.2f}) & 5m RSI fell to {rsi} (< 50)",
+                            "rsi": rsi
+                        }
+                elif action_upper == "SELL":
+                    if last_c > last_o and rsi > 50.0:
+                        return {
+                            "reversal_detected": True,
+                            "details": f"5m Green Candle (₹{last_o:.2f} ➔ ₹{last_c:.2f}) & 5m RSI rose to {rsi} (> 50)",
+                            "rsi": rsi
+                        }
+
+                return {"reversal_detected": False, "details": f"Momentum intact (5m RSI: {rsi})", "rsi": rsi}
+    except Exception as e:
+        logger.warning("5m momentum reversal check error for %s: %s", symbol, e)
+
+    return {"reversal_detected": False, "details": "Data unavailable", "rsi": 50.0}
+
+
+

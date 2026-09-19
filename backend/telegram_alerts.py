@@ -238,6 +238,31 @@ def alert_profit_target_approaching(symbol: str, action: str, entry_price: float
     send_telegram_message(msg)
 
 
+# ─────────────────────── MOMENTUM REVERSAL ALERT (FILTER 3) ───────────────────────
+
+def alert_momentum_reversal(symbol: str, action: str, current_price: float,
+                            current_pnl: float, peak_pnl: float, signal_details: str):
+    """Alert user when 5-minute technical reversal is detected on an open position.
+    NOTE: The trade remains 100% OPEN (no auto-exit)."""
+    pnl_sign = "+" if current_pnl >= 0 else ""
+    action_str = (action or "BUY").upper()
+    action_emoji = "🟢 BUY" if action_str == "BUY" else "🔴 SELL"
+    msg = (
+        f"⚠️ <b>MOMENTUM REVERSAL DETECTED!</b>\n"
+        f"<i>{_ist_now()}</i>\n"
+        f"{'=' * 30}\n"
+        f"<b>{symbol.replace('.NS', '')}</b>\n"
+        f"Action: <b>{action_emoji}</b>\n"
+        f"CMP: ₹{current_price:,.2f}\n"
+        f"Current P&L: <b>{pnl_sign}₹{current_pnl:,.2f}</b> (Peak: +₹{peak_pnl:,.2f})\n"
+        f"Signal: <b>{signal_details}</b> 🔻\n"
+        f"Status: <b>Trade remains OPEN</b> (Not Auto-Closed) 🛡️\n"
+        f"{'=' * 30}\n"
+        f"👉 <i>Tip: Stock momentum is fading/reversing. Review your position on Angel One or lock profits manually if needed!</i> 📱"
+    )
+    send_telegram_message(msg)
+
+
 # ─────────────────────── EOD DAILY REPORT ───────────────────────
 
 def alert_daily_report(balance: float, starting_capital: float,

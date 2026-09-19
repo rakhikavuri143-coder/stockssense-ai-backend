@@ -343,13 +343,15 @@ def close_live_position(
 
 
 _live_peak_pnl: dict[int, float] = {}
+_live_reversal_notified: set[int] = set()
+_live_last_reversal_check_ts: dict[int, float] = {}
 
 def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[dict]:
     """
     Check open live positions against live prices and exit on triggers.
     Runs in the 15-second scheduler job.
     """
-    global _live_peak_pnl
+    global _live_peak_pnl, _live_reversal_notified, _live_last_reversal_check_ts
     open_trades = db.query(LiveTrade).filter(LiveTrade.status == "OPEN").all()
     results = []
     
@@ -372,6 +374,8 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
             res = close_live_position(db, symbol, price, exit_reason="EOD_AUTO_SQUAREOFF")
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
+            _live_reversal_notified.discard(trade_id)
+            _live_last_reversal_check_ts.pop(trade_id, None)
             continue
 
         # 🛡️ Guard #17: Live Emergency Exit check
@@ -382,6 +386,8 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="CIRCUIT_EMERGENCY_EXIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_reversal_notified.discard(trade_id)
+                _live_last_reversal_check_ts.pop(trade_id, None)
                 logger.info("🚨 Guard #17 Live: Emergency exit triggered for %s.", symbol)
                 continue
         except Exception as ge:
@@ -393,23 +399,44 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
             res = close_live_position(db, symbol, price, exit_reason="HARD_SL_BREAKER")
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
+            _live_reversal_notified.discard(trade_id)
+            _live_last_reversal_check_ts.pop(trade_id, None)
             logger.info("🚨 Hard ₹300 SL Circuit Breaker triggered for LIVE trade %s (PnL: ₹%.2f). Squareoff executed.", symbol, current_pnl)
             continue
 
-        # ══ DYNAMIC TRAILING PROFIT LOCK (+₹400 PEAK ACTIVATION, ₹200 TRAILING FLOOR) ══
+        # ══ FILTER 2: TRAILING PEAK PROFIT LOCK (+₹120 PEAK, ₹30 TRAIL PULLBACK) ══
+        # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
+        # Once trade touches >= ₹120 peak, if it pulls back by ₹30 -> Exit immediately!
         peak_pnl_val = _live_peak_pnl.get(trade_id, 0.0)
         if current_pnl > peak_pnl_val:
             _live_peak_pnl[trade_id] = current_pnl
             peak_pnl_val = current_pnl
 
-        if peak_pnl_val >= 400.0:
-            trailing_floor = max(200.0, peak_pnl_val - 200.0)
-            if current_pnl <= trailing_floor:
-                res = close_live_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
-                results.append(res)
-                _live_peak_pnl.pop(trade_id, None)
-                logger.info("💰 LIVE Dynamic Profit Lock: %s Peaked at +₹%.0f, Exited at +₹%.0f (Floor: +₹%.0f)", symbol, peak_pnl_val, current_pnl, trailing_floor)
-                continue
+        if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl) >= 30.0 and current_pnl > 0:
+            res = close_live_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+            results.append(res)
+            _live_peak_pnl.pop(trade_id, None)
+            _live_reversal_notified.discard(trade_id)
+            _live_last_reversal_check_ts.pop(trade_id, None)
+            logger.info("💰 LIVE Trailing Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl, current_pnl)
+            continue
+
+        # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
+        # Does NOT close trade. Checks 5m candle & RSI every 45s, alerts user if momentum fades.
+        now_ts = time.time()
+        last_check = _live_last_reversal_check_ts.get(trade_id, 0.0)
+        if trade_id not in _live_reversal_notified and (now_ts - last_check >= 45.0):
+            _live_last_reversal_check_ts[trade_id] = now_ts
+            try:
+                from backend.loss_guard import check_5m_momentum_reversal
+                from backend.telegram_alerts import alert_momentum_reversal
+                rev_info = check_5m_momentum_reversal(symbol, trade.action)
+                if rev_info.get("reversal_detected"):
+                    _live_reversal_notified.add(trade_id)
+                    logger.info("⚠️ [FILTER 3 LIVE ALERT] Momentum reversal for %s: %s", symbol, rev_info.get("details"))
+                    alert_momentum_reversal(symbol, trade.action, price, current_pnl, peak_pnl_val, rev_info.get("details", ""))
+            except Exception as _re:
+                logger.warning("Live 5m reversal check failed for %s: %s", symbol, _re)
 
         # Standard Target/SL logic
         if trade.action == "BUY":
@@ -417,25 +444,31 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 res = close_live_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_reversal_notified.discard(trade_id)
+                _live_last_reversal_check_ts.pop(trade_id, None)
             elif price >= trade.target1:
-                # Notify Telegram when T1 is reached, but DO NOT force-close. Let Dynamic Trailing Engine trail profit!
                 logger.info("🎯 LIVE T1 Target Reached for %s (+₹%.2f P&L). Position kept open to trail for T2/Big Gains!", symbol, current_pnl)
             elif price <= trade.stop_loss:
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_reversal_notified.discard(trade_id)
+                _live_last_reversal_check_ts.pop(trade_id, None)
         elif trade.action == "SELL":
             if price <= trade.target2:
                 res = close_live_position(db, symbol, price, exit_reason="T2_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_reversal_notified.discard(trade_id)
+                _live_last_reversal_check_ts.pop(trade_id, None)
             elif price <= trade.target1:
-                # Notify Telegram when T1 is reached, but DO NOT force-close. Let Dynamic Trailing Engine trail profit!
                 logger.info("🎯 LIVE T1 Target Reached for %s (+₹%.2f P&L). Position kept open to trail for T2/Big Gains!", symbol, current_pnl)
             elif price >= trade.stop_loss:
                 res = close_live_position(db, symbol, price, exit_reason="SL_HIT")
                 results.append(res)
                 _live_peak_pnl.pop(trade_id, None)
+                _live_reversal_notified.discard(trade_id)
+                _live_last_reversal_check_ts.pop(trade_id, None)
 
     return results
 

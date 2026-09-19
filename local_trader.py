@@ -1249,6 +1249,9 @@ def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty:
 
 
 LAST_SATURDAY_AUDIT_DATE = None
+LOCAL_PAPER_PEAKS: dict[int, float] = {}
+LOCAL_PAPER_REVERSALS: dict[int, float] = {}
+LOCAL_PAPER_NOTIFIED_REV: set[int] = set()
 
 
 def _local_sl_monitor_thread():
@@ -1308,15 +1311,55 @@ def _local_sl_monitor_thread():
                             sl_price = pt.stop_loss or 0.0
                             t1_price = pt.target1 or 0.0
 
+                            # Track Peak P&L (High-water mark)
+                            curr_peak = max(LOCAL_PAPER_PEAKS.get(pt.id, 0.0), pnl)
+                            LOCAL_PAPER_PEAKS[pt.id] = round(curr_peak, 2)
+
+                            # ── Filter 3: 5-Minute Technical Reversal Alert (Telegram Only, no exit) ──
+                            now_t = time.time()
+                            last_rev_chk = LOCAL_PAPER_REVERSALS.get(pt.id, 0.0)
+                            if pt.id not in LOCAL_PAPER_NOTIFIED_REV and (now_t - last_rev_chk >= 45.0):
+                                LOCAL_PAPER_REVERSALS[pt.id] = now_t
+                                try:
+                                    from backend.loss_guard import check_5m_momentum_reversal
+                                    rev_info = check_5m_momentum_reversal(sym, act)
+                                    if rev_info.get("reversal_detected"):
+                                        LOCAL_PAPER_NOTIFIED_REV.add(pt.id)
+                                        send_telegram_message(
+                                            f"⚠️ <b>[PAPER] MOMENTUM REVERSAL DETECTED!</b>\n\n"
+                                            f"• <b>Symbol:</b> {sym}\n"
+                                            f"• <b>Current P&L:</b> {'+' if pnl >= 0 else ''}₹{pnl:.2f} (Peak: +₹{curr_peak:.2f})\n"
+                                            f"• <b>Signal:</b> {rev_info.get('details')} 🔻\n"
+                                            f"• <b>Status:</b> <b>Paper Trade remains OPEN</b> 🛡️"
+                                        )
+                                except Exception:
+                                    pass
+
+                            # ── Filter 2: Trailing Peak Profit Lock (Peak >= 120 and drops >= 30) ──
+                            if curr_peak >= 120.0 and (curr_peak - pnl) >= 30.0 and pnl > 0:
+                                pt.status = "PROFIT_LOCK"
+                                pt.exit_price = cmp_price
+                                pt.pnl = pnl
+                                pt.pnl_percent = pnl_pct
+                                pt.closed_at = datetime.utcnow()
+                                db.commit()
+                                LOCAL_PAPER_PEAKS.pop(pt.id, None)
+                                LOCAL_PAPER_REVERSALS.pop(pt.id, None)
+                                LOCAL_PAPER_NOTIFIED_REV.discard(pt.id)
+                                send_telegram_message(f"💰 <b>PAPER TRADE TRAILING PROFIT LOCKED</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nLocked P&L: +₹{pnl:.2f} (Peak: +₹{curr_peak:.2f})")
+
                             # SL Hit check
-                            if (act == "BUY" and sl_price > 0 and cmp_price <= sl_price) or \
-                               (act == "SELL" and sl_price > 0 and cmp_price >= sl_price):
+                            elif (act == "BUY" and sl_price > 0 and cmp_price <= sl_price) or \
+                                 (act == "SELL" and sl_price > 0 and cmp_price >= sl_price):
                                 pt.status = "SL_HIT"
                                 pt.exit_price = cmp_price
                                 pt.pnl = pnl
                                 pt.pnl_percent = pnl_pct
                                 pt.closed_at = datetime.utcnow()
                                 db.commit()
+                                LOCAL_PAPER_PEAKS.pop(pt.id, None)
+                                LOCAL_PAPER_REVERSALS.pop(pt.id, None)
+                                LOCAL_PAPER_NOTIFIED_REV.discard(pt.id)
                                 send_telegram_message(f"🛑 <b>PAPER TRADE SL HIT</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nP&L: ₹{pnl:.2f}")
 
                             # Target 1 Hit check
@@ -1328,6 +1371,9 @@ def _local_sl_monitor_thread():
                                 pt.pnl_percent = pnl_pct
                                 pt.closed_at = datetime.utcnow()
                                 db.commit()
+                                LOCAL_PAPER_PEAKS.pop(pt.id, None)
+                                LOCAL_PAPER_REVERSALS.pop(pt.id, None)
+                                LOCAL_PAPER_NOTIFIED_REV.discard(pt.id)
                                 send_telegram_message(f"🎯 <b>PAPER TRADE TARGET HIT</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nP&L: +₹{pnl:.2f}")
                     db.close()
                 except Exception as _pe:
