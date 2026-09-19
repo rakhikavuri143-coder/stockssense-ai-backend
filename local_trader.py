@@ -1239,9 +1239,12 @@ def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty:
         "sl_order_id":         None,
         "target_order_id":     None,
         "converted_to_target": False,
+        "peak_pnl":            0.0,
+        "reversal_alert_sent": False,
+        "last_reversal_check": 0.0,
         "registered_at":       time.time()
     }
-    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300 | Target ₹150 Conversion Guard Active)")
+    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300 | Target ₹150 Conversion Guard Active | Trailing Peak Lock Active)")
 
 
 
@@ -1461,7 +1464,30 @@ def _local_sl_monitor_thread():
                 avg_price = float(pos.get("avgprice") or pos.get("buyprice") or pos.get("sellprice") or 0)
                 tok = pos.get("symboltoken", "")
 
-                guard_info = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(f"{sym}-EQ") or LOCAL_SL_TRACKER.get(sym.replace("-EQ", "")) or {}
+                clean_sym = sym.replace("-EQ", "").strip()
+                guard_info = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(f"{sym}-EQ") or LOCAL_SL_TRACKER.get(clean_sym)
+                if not guard_info:
+                    guard_info = {
+                        "symbol":              clean_sym,
+                        "symbol_token":        str(tok),
+                        "action":              action,
+                        "qty":                 qty,
+                        "entry_price":         avg_price,
+                        "stop_loss":           0,
+                        "initial_sl":          0,
+                        "target1":             0,
+                        "target2":             0,
+                        "target_150_price":    0.0,
+                        "sl_order_id":         None,
+                        "target_order_id":     None,
+                        "converted_to_target": False,
+                        "peak_pnl":            0.0,
+                        "reversal_alert_sent": False,
+                        "last_reversal_check": 0.0,
+                        "registered_at":       time.time()
+                    }
+                    LOCAL_SL_TRACKER[sym] = guard_info
+
                 sl_price = guard_info.get("stop_loss", 0)
                 if (sl_price <= 0 or sl_price is None) and avg_price > 0:
                     max_move = 300.0 / qty
@@ -1498,6 +1524,64 @@ def _local_sl_monitor_thread():
                     live_pnl = (cmp_price - avg_price) * qty
                 else:
                     live_pnl = (avg_price - cmp_price) * qty
+
+                # ── STEP 1B: Track High-Water Mark (Peak P&L) ──
+                current_peak = max(guard_info.get("peak_pnl", 0.0), live_pnl)
+                guard_info["peak_pnl"] = round(current_peak, 2)
+
+                # ── STEP 1C: FILTER 3 - 5-Minute Technical Reversal Alert (Telegram Notification Only) ──
+                # NOTE: Does NOT auto-close trade! Sends an early warning so user can manually decide.
+                now_ts_rev = time.time()
+                if not guard_info.get("reversal_alert_sent") and (now_ts_rev - guard_info.get("last_reversal_check", 0) >= 45):
+                    guard_info["last_reversal_check"] = now_ts_rev
+                    try:
+                        rev_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_sym}?interval=5m&range=1d"
+                        rev_req = urllib.request.Request(rev_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                        rev_ctx = ssl.create_default_context()
+                        with urllib.request.urlopen(rev_req, context=rev_ctx, timeout=3) as rev_resp:
+                            rev_data = json.loads(rev_resp.read().decode("utf-8"))
+                            rev_res = rev_data.get("chart", {}).get("result", [{}])[0]
+                            rev_quotes = rev_res.get("indicators", {}).get("quote", [{}])[0]
+                            c_list = [c for c in rev_quotes.get("close", []) if c is not None]
+                            o_list = [o for o in rev_quotes.get("open", []) if o is not None]
+
+                            if len(c_list) >= 15 and len(o_list) >= 1:
+                                c_diffs = [c_list[i] - c_list[i-1] for i in range(1, len(c_list))]
+                                c_gains = [d for d in c_diffs if d > 0]
+                                c_losses = [abs(d) for d in c_diffs if d < 0]
+                                avg_g = sum(c_gains[-14:]) / 14 if c_gains else 0.001
+                                avg_l = sum(c_losses[-14:]) / 14 if c_losses else 0.001
+                                c_rsi = round(100 - (100 / (1 + (avg_g / avg_l))), 1)
+
+                                last_c = c_list[-1]
+                                last_o = o_list[-1]
+                                is_reversal = False
+                                rev_signal_desc = ""
+
+                                if action == "BUY":
+                                    # Bearish reversal: Red candle + RSI drops below 50
+                                    if last_c < last_o and c_rsi < 50.0:
+                                        is_reversal = True
+                                        rev_signal_desc = f"5m Red Candle (₹{last_o:.2f} ➔ ₹{last_c:.2f}) & 5m RSI: {c_rsi} (< 50)"
+                                elif action == "SELL":
+                                    # Bullish reversal: Green candle + RSI crosses above 50
+                                    if last_c > last_o and c_rsi > 50.0:
+                                        is_reversal = True
+                                        rev_signal_desc = f"5m Green Candle (₹{last_o:.2f} ➔ ₹{last_c:.2f}) & 5m RSI: {c_rsi} (> 50)"
+
+                                if is_reversal:
+                                    guard_info["reversal_alert_sent"] = True
+                                    print(f"⚠️ [FILTER 3 ALERT] Momentum Reversal detected for {sym}: {rev_signal_desc} (P&L: ₹{live_pnl:.2f})")
+                                    send_telegram_message(
+                                        f"⚠️ <b>MOMENTUM REVERSAL DETECTED!</b>\n\n"
+                                        f"• <b>Symbol:</b> {sym}\n"
+                                        f"• <b>Current P&L:</b> {'+' if live_pnl >= 0 else ''}₹{live_pnl:.2f} (Peak: +₹{current_peak:.2f})\n"
+                                        f"• <b>Signal:</b> {rev_signal_desc} 🔻\n"
+                                        f"• <b>Status:</b> <b>Trade remains OPEN</b> (Not Auto-Closed) 🛡️\n\n"
+                                        f"👉 <i>Tip: Stock momentum is reversing. Review your position on Angel One or lock profits manually if needed!</i> 📱"
+                                    )
+                    except Exception:
+                        pass
 
                 # ── STEP 2: ₹100 PROFIT REACHED -> CONVERT SL TO TARGET ₹150 LIMIT ORDER ──
                 if live_pnl >= 100.0 and not guard_info.get("converted_to_target"):
@@ -1588,6 +1672,13 @@ def _local_sl_monitor_thread():
                 if live_pnl >= 148.0 or (tgt_150_p > 0 and ((action == "BUY" and cmp_price >= tgt_150_p) or (action == "SELL" and cmp_price <= tgt_150_p))):
                     should_exit = True
                     exit_reason = f"TARGET ₹150 PROFIT HIT (P&L: +₹{live_pnl:.2f} | CMP ₹{cmp_price:.2f})"
+
+                # Trigger 0B: FILTER 2 - Trailing Peak Profit Lock (High-Water Mark)
+                # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
+                # When peak profit touched >= ₹120 and pulls back by ₹30 from its peak -> Exit immediately to lock profit!
+                elif current_peak >= 120.0 and live_pnl <= (current_peak - 30.0) and live_pnl > 0:
+                    should_exit = True
+                    exit_reason = f"TRAILING PEAK PROFIT LOCK (Peak: +₹{current_peak:.2f} ➔ Dropped to +₹{live_pnl:.2f} | Locked +₹{live_pnl:.2f} Profit)"
 
                 # Trigger 1: EOD Square-off at 3:10 PM
                 elif is_eod:
