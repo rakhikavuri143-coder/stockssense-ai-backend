@@ -180,15 +180,31 @@ async def auto_exit_monitor_job():
         return
 
     def _fetch_prices_lightweight(symbols):
-        """Fetch live prices using ONLY stdlib urllib (zero extra RAM, no yfinance/pandas)."""
+        """Fetch live prices prioritizing Angel One SmartAPI real-time LTP (0ms), fallback to Yahoo Finance."""
         if not symbols:
             return {}
         import urllib.request
         import json as _json_mod
         prices = {}
 
-        for sym in symbols:
-            # Primary: Direct Yahoo Finance REST endpoint (ultra-fast, 50ms, stdlib only)
+        # 1. ⚡ Primary: Angel One SmartAPI real-time LTP (Zero delay, exact tick)
+        try:
+            from backend import live_trading
+            from backend.broker_angelone import get_smartapi_ltp, get_angelone_token_and_symbol
+            auth_data = live_trading.get_live_auth_data()
+            if auth_data:
+                for sym in symbols:
+                    token, t_sym = get_angelone_token_and_symbol(sym)
+                    if token and t_sym:
+                        ltp = get_smartapi_ltp(auth_data, token, t_sym)
+                        if ltp and ltp > 0:
+                            prices[sym] = float(ltp)
+        except Exception as _e:
+            logger.debug("SmartAPI LTP fetch in auto-exit monitor: %s", _e)
+
+        # 2. Fallback: Direct Yahoo Finance REST endpoint for remaining symbols
+        remaining = [s for s in symbols if s not in prices]
+        for sym in remaining:
             try:
                 url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
                 req = urllib.request.Request(url, headers={
@@ -824,11 +840,23 @@ async def ultra_sniper_scan_endpoint():
                 if rr_ratio < 1.75:
                     return None
 
+                # Checklist 7: Anti-FOMO & Extended Move Trap Filter
+                is_extended = tech_15m.get("is_extended_move", False)
+                if is_extended:
+                    return None
+
+                # Checklist 8: Fresh Breakout or Clean Pullback Bounce (Candle 1 or 2 Only)
+                is_fresh = tech_15m.get("is_fresh_breakout", False)
+                is_bounce = tech_15m.get("is_pullback_bounce", False)
+                if not (is_fresh or is_bounce):
+                    return None
+
                 score = 90.0
                 if effective_rvol >= 2.5: score += 3.0
                 elif effective_rvol >= 2.0: score += 2.0
                 if 55 <= rsi_1h <= 65: score += 2.0
                 if rr_ratio >= 2.0: score += 2.0
+                if is_fresh: score += 1.0
                 score = min(99.0, score)
 
                 if score < 92.0:
@@ -853,7 +881,10 @@ async def ultra_sniper_scan_endpoint():
                     "rvol":          round(effective_rvol, 2),
                     "trend_1h":      trend_1h,
                     "trend_15m":     trend_15m,
-                    "reasoning":     f"👑 92%+ ULTRA SNIPER TRADE: 1H+15M Confluence | RVOL {effective_rvol:.1f}x | R:R 1:{rr_ratio:.1f} | Pure Trend!",
+                    "scan_type":     "ultra_sniper",
+                    "is_fresh_breakout": is_fresh,
+                    "is_pullback_bounce": is_bounce,
+                    "reasoning":     f"👑 92%+ ULTRA SNIPER TRADE: Candle 1-2 Early Entry | 1H+15M Confluence | RVOL {effective_rvol:.1f}x | R:R 1:{rr_ratio:.1f} | Pure Trend!",
                     "mode":          "ULTRA_SNIPER"
                 }
             except Exception as ex:

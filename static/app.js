@@ -1061,7 +1061,7 @@ async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
     const directData = await directRes.json();
     if (directData.status === true && directData.data) {
       const orderId = directData.data.uniqueorderid || directData.data.orderid;
-      await fetch("/api/live/record-order", {
+      const recRes = await fetch("/api/live/record-order", {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -1077,6 +1077,12 @@ async function executeBrowserDirectOrder(data, symbol, name, isScalp = false) {
           is_scalp: isScalp
         })
       });
+      const recData = await recRes.json();
+      if (recData && recData.sl_placed) {
+        showToast(`🛡️ Broker Stop-Loss Placed: #${recData.sl_order_id}`, 'buy');
+      } else if (data.stop_loss > 0) {
+        showToast(`⚠️ SL Order Note: ${recData?.sl_message || 'Exchange SL could not be placed automatically. Auto-Guard monitor active.'}`, 'sell');
+      }
       showOrderConfirmation({
         mode: 'LIVE',
         action: data.action,
@@ -1497,9 +1503,30 @@ async function loadPortfolio() {
             triggerExit = true;
             exitReason = 'SL_HIT';
           }
+
+          // ══ DUAL TRAILING PROFIT LOCK (Noise Protected) ══
+          window._browserPeakPnl = window._browserPeakPnl || {};
+          const tKey = (p.id ? String(p.id) : '') || sym;
+          const currPeak = window._browserPeakPnl[tKey] || 0.0;
+          if (posPnl > currPeak) {
+            window._browserPeakPnl[tKey] = posPnl;
+          }
+          const peakVal = window._browserPeakPnl[tKey] || posPnl;
+
+          // Check Deep Scan (₹50 buffer at >=₹150 peak) vs Ultra Sniper (₹30 buffer at >=₹100 peak)
+          if (!triggerExit) {
+            if (peakVal >= 150.0 && ((peakVal - posPnl) >= 50.0 || posPnl <= 25.0) && posPnl > 0) {
+              triggerExit = true;
+              exitReason = `SWING_TRAILING_50_LOCK (Peak: +₹${peakVal.toFixed(2)} ➔ Retraced to +₹${posPnl.toFixed(2)})`;
+            } else if (peakVal >= 100.0 && ((peakVal - posPnl) >= 30.0 || posPnl <= 10.0) && posPnl > 0) {
+              triggerExit = true;
+              exitReason = `SNIPER_PROFIT_30_LOCK (Peak: +₹${peakVal.toFixed(2)} ➔ Retraced to +₹${posPnl.toFixed(2)})`;
+            }
+          }
           
           if (triggerExit) {
             console.log(`🚨 Auto-closing ${sym} from browser surveillance (Reason: ${exitReason}, PnL: ₹${posPnl.toFixed(2)})`);
+            if (window._browserPeakPnl[tKey]) delete window._browserPeakPnl[tKey];
             quickClosePosition(p.symbol, exitReason);
           }
         }

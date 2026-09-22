@@ -58,24 +58,19 @@ NIFTY50_STOCKS = [
 # High-Volume Liquid Budget Stocks (under ₹200 on NSE)
 # Scanned using the EXACT SAME 10 Capital Protection Guards!
 BUDGET_LOW_PRICED_STOCKS = [
-    {"symbol": "SUZLON.NS",     "name": "Suzlon Energy",                "sector": "Power"},
+    {"symbol": "ZOMATO.NS",     "name": "Zomato Limited",               "sector": "Consumer"},
     {"symbol": "IDFCFIRSTB.NS", "name": "IDFC First Bank",              "sector": "Banking"},
     {"symbol": "PNB.NS",        "name": "Punjab National Bank",         "sector": "Banking"},
-    {"symbol": "YESBANK.NS",    "name": "Yes Bank",                     "sector": "Banking"},
     {"symbol": "IRFC.NS",       "name": "Indian Railway Finance",       "sector": "Finance"},
     {"symbol": "NHPC.NS",       "name": "NHPC Limited",                 "sector": "Power"},
     {"symbol": "SAIL.NS",       "name": "Steel Authority of India",     "sector": "Metal"},
     {"symbol": "IOC.NS",        "name": "Indian Oil Corporation",       "sector": "Energy"},
     {"symbol": "GMRAIRPORT.NS", "name": "GMR Airports Infrastructure",  "sector": "Infrastructure"},
-    {"symbol": "IDBI.NS",       "name": "IDBI Bank",                    "sector": "Banking"},
-    {"symbol": "UCOBANK.NS",    "name": "UCO Bank",                     "sector": "Banking"},
     {"symbol": "UNIONBANK.NS",  "name": "Union Bank of India",          "sector": "Banking"},
     {"symbol": "HFCL.NS",       "name": "HFCL Limited",                 "sector": "Telecom"},
     {"symbol": "NBCC.NS",       "name": "NBCC India",                   "sector": "Infrastructure"},
     {"symbol": "SJVN.NS",       "name": "SJVN Limited",                 "sector": "Power"},
-    {"symbol": "RCF.NS",        "name": "Rashtriya Chemicals",          "sector": "Chemicals"},
     {"symbol": "FEDERALBNK.NS", "name": "Federal Bank",                 "sector": "Banking"},
-    {"symbol": "ETERNAL.NS",    "name": "Eternal (Zomato Limited)",     "sector": "Consumer"},
 ]
 
 ALL_STOCKS = NIFTY50_STOCKS + BUDGET_LOW_PRICED_STOCKS

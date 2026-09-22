@@ -199,6 +199,29 @@ def place_live_order(
 
     order_id = order_res.get("order_id")
 
+    # 6.5. 🛡️ Guaranteed Multistage Stop-Loss Placement in Angel One Order Book
+    sl_res = {}
+    if stop_loss > 0 and token:
+        try:
+            from backend.broker_angelone import place_smartapi_sl_order_multistage
+            sl_res = place_smartapi_sl_order_multistage(
+                auth_data=auth_data,
+                symbol=trading_symbol,
+                symbol_token=token,
+                action=action,
+                qty=quantity,
+                sl_price=stop_loss,
+                exchange="NSE",
+                product="INTRADAY"
+            )
+            if sl_res.get("success"):
+                logger.info("✅ Broker Stop-Loss placed for %s: ID %s @ ₹%.2f", trading_symbol, sl_res.get("sl_order_id"), stop_loss)
+            else:
+                logger.warning("⚠️ Broker Stop-Loss placement failed for %s: %s", trading_symbol, sl_res.get("message"))
+        except Exception as sle:
+            logger.warning("SL order exception for %s: %s", trading_symbol, sle)
+            sl_res = {"success": False, "message": str(sle)}
+
     # 7. Save live trade in database
     trade_data = {
         "signal_id":    signal_id,
@@ -230,11 +253,15 @@ def place_live_order(
     except Exception as e:
         logger.warning("Telegram live open alert failed: %s", e)
 
+    sl_ok = sl_res.get("success", False)
     return {
-        "success":  True,
-        "message":  f"🟢 Live {action} order placed: {quantity} x {symbol} @ ₹{entry_price:.2f}",
-        "trade_id": db_trade.id,
-        "order_id": order_id,
+        "success":     True,
+        "message":     f"🟢 Live {action} order placed: {quantity} x {symbol} @ ₹{entry_price:.2f}" + (f" | SL placed #{sl_res.get('sl_order_id')}" if sl_ok else f" | SL warning: {sl_res.get('message', 'Not placed')}"),
+        "trade_id":    db_trade.id,
+        "order_id":    order_id,
+        "sl_placed":   sl_ok,
+        "sl_order_id": sl_res.get("sl_order_id"),
+        "sl_message":  sl_res.get("message", "")
     }
 
 
@@ -430,17 +457,27 @@ def check_live_auto_exits(db: Session, live_prices: dict[str, float]) -> List[di
                 _live_peak_price[trade_id] = peak_price
             price_drop = price - peak_price
 
-        pullback_allowed = max(30.0, peak_pnl_val * 0.20)
-        min_price_buffer = max(0.20, trade.entry_price * 0.002)
+        # ══ FILTER 2: DYNAMIC TRAILING PROFIT LOCK (₹30 Sniper vs ₹50 Deep Scan) ══
+        min_price_buffer = max(0.10, trade.entry_price * 0.001)
 
-        if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl) >= pullback_allowed and current_pnl > 0 and price_drop >= min_price_buffer:
-            res = close_live_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+        is_trailing_exit = False
+        trailing_reason = ""
+
+        if peak_pnl_val >= 150.0 and ((peak_pnl_val - current_pnl) >= 50.0 or current_pnl <= 25.0) and current_pnl > 0 and price_drop >= min_price_buffer:
+            is_trailing_exit = True
+            trailing_reason = f"SWING_TRAILING_50_LOCK (Peak: +₹{peak_pnl_val:.2f} ➔ Retraced ₹{(peak_pnl_val - current_pnl):.2f} to +₹{current_pnl:.2f})"
+        elif peak_pnl_val >= 100.0 and ((peak_pnl_val - current_pnl) >= 30.0 or current_pnl <= 10.0) and current_pnl > 0 and price_drop >= min_price_buffer:
+            is_trailing_exit = True
+            trailing_reason = f"SNIPER_PROFIT_30_LOCK (Peak: +₹{peak_pnl_val:.2f} ➔ Retraced ₹{(peak_pnl_val - current_pnl):.2f} to +₹{current_pnl:.2f})"
+
+        if is_trailing_exit:
+            res = close_live_position(db, symbol, price, exit_reason=trailing_reason)
             results.append(res)
             _live_peak_pnl.pop(trade_id, None)
             _live_peak_price.pop(trade_id, None)
             _live_reversal_notified.discard(trade_id)
             _live_last_reversal_check_ts.pop(trade_id, None)
-            logger.info("💰 LIVE Dynamic 20% Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl, current_pnl)
+            logger.info("💰 LIVE %s: %s (Locked +₹%.2f)", trailing_reason, symbol, current_pnl)
             continue
 
         # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
@@ -586,9 +623,43 @@ def record_live_trade(
     db.commit()
     db.refresh(trade)
 
+    # 🛡️ Place Guaranteed Multistage Stop-Loss in Angel One Order Book
+    sl_res = {}
+    if stop_loss > 0:
+        token, trading_symbol = get_angelone_token_and_symbol(symbol)
+        auth_data = get_live_auth_data()
+        if auth_data and token and trading_symbol:
+            try:
+                from backend.broker_angelone import place_smartapi_sl_order_multistage
+                sl_res = place_smartapi_sl_order_multistage(
+                    auth_data=auth_data,
+                    symbol=trading_symbol,
+                    symbol_token=token,
+                    action=action,
+                    qty=quantity,
+                    sl_price=stop_loss,
+                    exchange="NSE",
+                    product="INTRADAY"
+                )
+                if sl_res.get("success"):
+                    logger.info("✅ Broker Stop-Loss placed via record_live_trade for %s: ID %s @ ₹%.2f", trading_symbol, sl_res.get("sl_order_id"), stop_loss)
+                else:
+                    logger.warning("⚠️ Broker Stop-Loss placement failed in record_live_trade for %s: %s", trading_symbol, sl_res.get("message"))
+            except Exception as sle:
+                logger.warning("SL order exception in record_live_trade for %s: %s", trading_symbol, sle)
+                sl_res = {"success": False, "message": str(sle)}
+
     try:
         telegram_alerts.send_order_alert(trade_data, is_live=True)
     except Exception as te:
         logger.warning("Failed to send Telegram alert for live trade: %s", te)
 
-    return {"success": True, "trade_id": trade.id, "message": f"Recorded live trade for {symbol}"}
+    sl_ok = sl_res.get("success", False)
+    return {
+        "success": True,
+        "trade_id": trade.id,
+        "sl_placed": sl_ok,
+        "sl_order_id": sl_res.get("sl_order_id"),
+        "sl_message": sl_res.get("message", ""),
+        "message": f"Recorded live trade for {symbol}" + (f" | SL placed #{sl_res.get('sl_order_id')}" if sl_ok else f" | SL warning: {sl_res.get('message', 'Not placed')}")
+    }

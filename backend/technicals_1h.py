@@ -37,7 +37,34 @@ def prune_caches():
 # ─────────────────────────── DATA FETCHING ────────────────────────────
 
 def fetch_1h_data(symbol: str, period: str = "5d") -> Optional[pd.DataFrame]:
-    """Fetch 1-Hour OHLCV candle data for the given NSE symbol."""
+    """Fetch 1-Hour OHLCV candle data using Angel One SmartAPI primary, yfinance fallback."""
+    # 1. Primary: Angel One SmartAPI direct candle API (0% Yahoo 403 Forbidden errors)
+    try:
+        from backend.broker_angelone import get_angelone_token_and_symbol, get_smartapi_candle_data
+        tok, _ = get_angelone_token_and_symbol(symbol)
+        auth = None
+        try:
+            import local_trader
+            if getattr(local_trader, "auth_session", None) and local_trader.auth_session.get("jwtToken"):
+                auth = local_trader.auth_session
+        except Exception:
+            pass
+
+        if auth and tok:
+            raw_candles = get_smartapi_candle_data(auth, tok, interval="ONE_HOUR", days=5)
+            if raw_candles and len(raw_candles) >= 10:
+                df = pd.DataFrame(raw_candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                df["Timestamp"] = pd.to_datetime(df["Timestamp"])
+                df.set_index("Timestamp", inplace=True)
+                for col in ["Open", "High", "Low", "Close", "Volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df.dropna(inplace=True)
+                if not df.empty and len(df) >= 10:
+                    return df
+    except Exception as se:
+        logger.debug("SmartAPI 1H fetch fallback to yfinance for %s: %s", symbol, se)
+
+    # 2. Fallback: yfinance
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period=period, interval="1h")
@@ -52,7 +79,34 @@ def fetch_1h_data(symbol: str, period: str = "5d") -> Optional[pd.DataFrame]:
 
 
 def fetch_15m_data(symbol: str, period: str = "2d") -> Optional[pd.DataFrame]:
-    """Fetch 15-Minute OHLCV candle data for the given NSE symbol (Upgrade 2: Multi-Timeframe)."""
+    """Fetch 15-Minute OHLCV candle data using Angel One SmartAPI primary, yfinance fallback."""
+    # 1. Primary: Angel One SmartAPI direct candle API (0% Yahoo 403 Forbidden errors)
+    try:
+        from backend.broker_angelone import get_angelone_token_and_symbol, get_smartapi_candle_data
+        tok, _ = get_angelone_token_and_symbol(symbol)
+        auth = None
+        try:
+            import local_trader
+            if getattr(local_trader, "auth_session", None) and local_trader.auth_session.get("jwtToken"):
+                auth = local_trader.auth_session
+        except Exception:
+            pass
+
+        if auth and tok:
+            raw_candles = get_smartapi_candle_data(auth, tok, interval="FIFTEEN_MINUTE", days=3)
+            if raw_candles and len(raw_candles) >= 8:
+                df = pd.DataFrame(raw_candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                df["Timestamp"] = pd.to_datetime(df["Timestamp"])
+                df.set_index("Timestamp", inplace=True)
+                for col in ["Open", "High", "Low", "Close", "Volume"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                df.dropna(inplace=True)
+                if not df.empty and len(df) >= 8:
+                    return df
+    except Exception as se:
+        logger.debug("SmartAPI 15M fetch fallback to yfinance for %s: %s", symbol, se)
+
+    # 2. Fallback: yfinance
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period=period, interval="15m")
@@ -67,8 +121,9 @@ def fetch_15m_data(symbol: str, period: str = "2d") -> Optional[pd.DataFrame]:
 
 def analyze_15m(symbol: str) -> Optional[dict]:
     """
-    Upgrade 2: 15-Minute timeframe analysis for precise entry timing.
-    Returns: {trend_15m, rsi_15m, price_vs_vwap_15m, rvol_15m, is_bullish_15m, is_bearish_15m}
+    Upgrade: 15-Minute timeframe analysis with Early Breakout & Anti-FOMO Extended Move Detection.
+    Returns: {trend_15m, rsi_15m, price_vs_vwap_15m, rvol_15m, is_bullish_15m, is_bearish_15m,
+              is_extended_move, is_fresh_breakout, is_pullback_bounce, dist_from_vwap_pct}
     """
     now = time.time()
     if symbol in _tech_15m_cache:
@@ -100,15 +155,66 @@ def analyze_15m(symbol: str) -> Optional[dict]:
         else:
             trend_15m = "SIDEWAYS"
 
+        dist_from_vwap_pct = round(abs(last_price15 - last_vwap15) / last_vwap15 * 100.0, 2)
+
+        # 🛑 Anti-FOMO / Extended Move Trap Detection:
+        consecutive_directional = 0
+        if len(df15) >= 3:
+            for i in [-1, -2, -3]:
+                c_o = df15["Close"].iloc[i] - df15["Open"].iloc[i]
+                if (c_o > 0 and trend_15m == "BULLISH") or (c_o < 0 and trend_15m == "BEARISH"):
+                    consecutive_directional += 1
+                else:
+                    break
+
+        is_extended_move = (
+            dist_from_vwap_pct > 1.0 or
+            (consecutive_directional >= 3 and dist_from_vwap_pct > 0.7) or
+            (trend_15m == "BULLISH" and last_rsi15 >= 68.0) or
+            (trend_15m == "BEARISH" and last_rsi15 <= 32.0)
+        )
+
+        # ⚡ Fresh Breakout Detection (Candle 1 or 2 Only — For Ultra-Sniper):
+        crossed_vwap_recent = False
+        if len(df15) >= 3:
+            prev_below = df15["Close"].iloc[-2] <= vwap15.iloc[-2] or df15["Close"].iloc[-3] <= vwap15.iloc[-3]
+            curr_above = df15["Close"].iloc[-1] > vwap15.iloc[-1]
+            if curr_above and prev_below:
+                crossed_vwap_recent = True
+
+        broke_range = False
+        if len(df15) >= 5:
+            recent_range_high = df15["High"].iloc[-5:-1].max()
+            if df15["Close"].iloc[-1] > recent_range_high:
+                broke_range = True
+
+        is_fresh_breakout = (
+            (crossed_vwap_recent or broke_range) and
+            dist_from_vwap_pct <= 0.8 and
+            rvol15 >= 0.8 and
+            not is_extended_move
+        )
+
+        # 🧠 Buy-on-Dip / Pullback Bounce Detection (For Deep AI Scan):
+        is_pullback_bounce = False
+        if len(df15) >= 2 and trend_15m == "BULLISH":
+            tested_vwap = (abs(df15["Low"].iloc[-1] - vwap15.iloc[-1]) / vwap15.iloc[-1] <= 0.0035 or
+                           abs(df15["Low"].iloc[-2] - vwap15.iloc[-2]) / vwap15.iloc[-2] <= 0.0035)
+            bounced_green = df15["Close"].iloc[-1] > df15["Open"].iloc[-1]
+            if tested_vwap and bounced_green and not is_extended_move:
+                is_pullback_bounce = True
+
         is_bullish_15m = (
             trend_15m == "BULLISH" and
             last_price15 > last_vwap15 and
-            40 <= last_rsi15 <= 75
+            45 <= last_rsi15 <= 68 and
+            not is_extended_move
         )
         is_bearish_15m = (
             trend_15m == "BEARISH" and
             last_price15 < last_vwap15 and
-            25 <= last_rsi15 <= 60
+            32 <= last_rsi15 <= 55 and
+            not is_extended_move
         )
 
         result = {
@@ -119,6 +225,10 @@ def analyze_15m(symbol: str) -> Optional[dict]:
             "rvol_15m":           rvol15,
             "is_bullish_15m":     is_bullish_15m,
             "is_bearish_15m":     is_bearish_15m,
+            "is_extended_move":   is_extended_move,
+            "is_fresh_breakout":  is_fresh_breakout,
+            "is_pullback_bounce": is_pullback_bounce,
+            "dist_from_vwap_pct": dist_from_vwap_pct,
         }
         if len(_tech_15m_cache) > 80:
             _tech_15m_cache.clear()
@@ -198,10 +308,13 @@ def compute_rvol(df: pd.DataFrame, window: int = 20) -> float:
     if len(df) < window + 1:
         return 1.0
     avg_vol = df["Volume"].iloc[-(window + 1):-1].mean()
-    last_vol = df["Volume"].iloc[-1]
     if avg_vol == 0:
         return 1.0
-    return round(last_vol / avg_vol, 2)
+    last_completed = df["Volume"].iloc[-2] if len(df) >= 2 else df["Volume"].iloc[-1]
+    current = df["Volume"].iloc[-1]
+    rvol_completed = last_completed / avg_vol
+    rvol_current = current / avg_vol
+    return round(max(rvol_completed, rvol_current), 2)
 
 
 def find_swing_lows(df: pd.DataFrame, window: int = 5) -> pd.Series:

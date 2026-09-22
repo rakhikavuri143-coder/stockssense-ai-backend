@@ -129,10 +129,10 @@ def _deep_ai_scan_single(stock: dict) -> Optional[dict]:
         if not ai:
             return None
 
-        signal = ai.get("signal", "AVOID")
+        signal = (ai.get("signal") or "AVOID").upper()
         conf   = float(ai.get("confidence", 0))
-        if signal == "AVOID" or conf < 85.0:
-            return None   # Filter out weak signals
+        if signal not in ("BUY", "SELL") or conf < 85.0:
+            return None   # Strict 85%+ High Conviction Filter
 
         isBuy = signal == "BUY"
         sl     = technical.get("sl_buy" if isBuy else "sl_sell", round(price * (0.988 if isBuy else 1.012), 2))
@@ -150,6 +150,7 @@ def _deep_ai_scan_single(stock: dict) -> Optional[dict]:
             "sector":       sector,
             "token":        tok,
             "symboltoken":  tok,
+            "symbol_token": tok,
             "action":       signal,
             "price":        round(float(price), 2),
             "entry_price":  round(float(price), 2),
@@ -165,6 +166,7 @@ def _deep_ai_scan_single(stock: dict) -> Optional[dict]:
             "news_summary": ai.get("news_summary", ""),
             "reasoning":    ai.get("reasoning", ""),
             "mode":         "DEEP_AI",
+            "scan_type":    "deep_scan",
         }
     except Exception as ex:
         return None
@@ -192,14 +194,14 @@ def run_deep_ai_scan(category: str = "all") -> dict:
         nifty_pct     = 0.0
 
     if category == "budget":
-        stocks = BUDGET_LOW_PRICED_STOCKS
+        stocks = BUDGET_LOW_PRICED_STOCKS[:10]
     elif category == "nifty50":
-        stocks = NIFTY50_STOCKS
+        stocks = NIFTY50_STOCKS[:10]
     else:
-        stocks = BUDGET_LOW_PRICED_STOCKS + NIFTY50_STOCKS[:20]
+        stocks = BUDGET_LOW_PRICED_STOCKS[:6] + NIFTY50_STOCKS[:8]
 
     signals = []
-    with ThreadPoolExecutor(max_workers=min(8, len(stocks))) as executor:
+    with ThreadPoolExecutor(max_workers=min(6, len(stocks))) as executor:
         results = executor.map(_deep_ai_scan_single, stocks)
         for res in results:
             if res:
@@ -297,12 +299,25 @@ def _ultra_sniper_scan_single(stock: dict) -> Optional[dict]:
         if not check6:
             return None  # Rejection 6: R:R ratio below 1.75x
 
+        # Checklist 7: Anti-FOMO & Extended Move Trap Filter (Eliminates 3-4 Candle Lag Traps)
+        # If price is already stretched > 1.0% away from 15M VWAP, reject! (Smart money profit-taking zone)
+        is_extended = tech_15m.get("is_extended_move", False)
+        if is_extended:
+            return None  # Rejection 7: Extended Move / Late Entry FOMO Trap
+
+        # Checklist 8: Fresh Breakout or Clean Pullback Bounce (Candle 1 or 2 Only)
+        is_fresh = tech_15m.get("is_fresh_breakout", False)
+        is_bounce = tech_15m.get("is_pullback_bounce", False)
+        if not (is_fresh or is_bounce):
+            return None  # Rejection 8: Not an early breakout or dip-bounce (Candle 1-2 only)
+
         # ── SCORE CALCULATION (0-100) ──────────────────────────────────────
         score = 90.0
         if effective_rvol >= 2.5: score += 3.0
         elif effective_rvol >= 2.0: score += 2.0
         if 55 <= rsi_1h <= 65: score += 2.0
         if rr_ratio >= 2.0: score += 2.0
+        if is_fresh: score += 1.0
         score = min(99.0, score)
 
         if score < 92.0:
@@ -339,9 +354,13 @@ def _ultra_sniper_scan_single(stock: dict) -> Optional[dict]:
                 "vwap_confluence": True,
                 "rsi_sweet_zone": True,
                 "no_open_high_trap": True,
-                "rr_ratio_ok": True
+                "rr_ratio_ok": True,
+                "early_entry_lock": True
             },
-            "reasoning":     f"👑 92%+ ULTRA SNIPER TRADE: 1H+15M Confluence | RVOL {effective_rvol:.1f}x | R:R 1:{rr_ratio:.1f} | Pure Trend!",
+            "scan_type":     "ultra_sniper",
+            "is_fresh_breakout": is_fresh,
+            "is_pullback_bounce": is_bounce,
+            "reasoning":     f"👑 92%+ ULTRA SNIPER TRADE: Candle 1-2 Early Entry | 1H+15M Confluence | RVOL {effective_rvol:.1f}x | R:R 1:{rr_ratio:.1f} | Pure Trend!",
             "mode":          "ULTRA_SNIPER"
         }
     except Exception as ex:
@@ -422,6 +441,10 @@ def run_ultra_sniper_scan() -> dict:
         }
 
     top_sniper = candidates[0]
+    try:
+        broadcast_top_scan_signals_to_telegram([top_sniper], scan_mode="👑 ULTRA SNIPER")
+    except Exception:
+        pass
     return {
         "sniper_trade": top_sniper,
         "runner_ups": candidates[1:3],
@@ -603,11 +626,155 @@ def save_live_trade_db(symbol: str, action: str, qty: int, price: float, sl: flo
         return None
 
 
+def close_live_trade_record(symbol: str, exit_price: float, pnl: float, exit_reason: str = "CLOSED"):
+    """Update LiveTrade record in DB when an auto-exit or square-off occurs."""
+    if not DB_AVAILABLE:
+        return
+    try:
+        db = SessionLocal()
+        clean_s = symbol.replace("-EQ", "").strip()
+        t = db.query(LiveTrade).filter(
+            LiveTrade.status == "OPEN",
+            (LiveTrade.symbol == symbol) | (LiveTrade.symbol == clean_s) | (LiveTrade.symbol == f"{clean_s}-EQ")
+        ).order_by(LiveTrade.id.desc()).first()
+        if t:
+            t.status = exit_reason or "CLOSED"
+            t.exit_price = round(float(exit_price or 0.0), 2)
+            t.pnl = round(float(pnl or 0.0), 2)
+            if t.entry_price and t.quantity and t.entry_price > 0:
+                t.pnl_percent = round((t.pnl / (t.entry_price * t.quantity)) * 100, 2)
+            t.closed_at = datetime.utcnow()
+            db.commit()
+            print(f"✅ Closed LiveTrade #{t.id} in DB: {symbol} Exit: ₹{t.exit_price} P&L: ₹{t.pnl}")
+        db.close()
+    except Exception as e:
+        print(f"⚠️ close_live_trade_record error: {e}")
+
+
+def reconcile_live_trades_with_broker(db):
+    """
+    Syncs and reconciles LiveTrade rows against Angel One broker's position book and order book.
+    - If a trade was closed on Angel One (netqty == 0), updates exit_price, pnl, pnl_percent, and status to CLOSED.
+    - If a trade is from a previous trading day (trade_date < today), auto-marks as CLOSED since intraday positions expire daily.
+    """
+    if not db:
+        return
+    try:
+        from datetime import datetime, timezone, timedelta
+        ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        today_ist = ist_now.date()
+
+        open_trades = db.query(LiveTrade).filter(LiveTrade.status == "OPEN").all()
+        if not open_trades:
+            return
+
+        # Fetch broker positions
+        pos_resp = get_live_positions()
+        broker_positions = {}
+        if pos_resp.get("connected"):
+            for p in pos_resp.get("positions", []):
+                tsym = p.get("tradingsymbol", "")
+                broker_positions[tsym] = p
+                broker_positions[tsym.replace("-EQ", "")] = p
+
+        # Fetch broker completed orders today for exact fill price matching
+        order_resp = get_order_book()
+        completed_orders = []
+        if order_resp.get("connected"):
+            completed_orders = [o for o in order_resp.get("orders", []) if (o.get("status") or "").lower() == "complete"]
+
+        for t in open_trades:
+            clean_s = (t.symbol or "").replace("-EQ", "").strip()
+            pos = broker_positions.get(t.symbol) or broker_positions.get(clean_s) or broker_positions.get(f"{clean_s}-EQ")
+
+            # 1. Closed today on Angel One (netqty == 0)
+            if pos and int(pos.get("netqty") or 0) == 0:
+                realised_pnl = float(pos.get("realised") or pos.get("pnl") or 0.0)
+                buy_avg = float(pos.get("buyavgprice") or pos.get("totalbuyavgprice") or t.entry_price or 0.0)
+                sell_avg = float(pos.get("sellavgprice") or pos.get("totalsellavgprice") or 0.0)
+
+                act = (t.action or "BUY").upper()
+                exit_p = 0.0
+                # Try finding matching exit order from order book
+                exit_action = "SELL" if act == "BUY" else "BUY"
+                matching_orders = [o for o in completed_orders if (o.get("tradingsymbol") in (t.symbol, clean_s, f"{clean_s}-EQ")) and (o.get("transactiontype") == exit_action)]
+                if matching_orders:
+                    exit_p = float(matching_orders[0].get("averageprice") or 0.0)
+
+                if exit_p <= 0:
+                    exit_p = sell_avg if act == "BUY" and sell_avg > 0 else (buy_avg if act == "SELL" and buy_avg > 0 else 0.0)
+
+                if exit_p <= 0 and t.entry_price and t.quantity:
+                    exit_p = t.entry_price + (realised_pnl / max(1, t.quantity)) if act == "BUY" else t.entry_price - (realised_pnl / max(1, t.quantity))
+
+                calc_pnl = round((exit_p - t.entry_price) * (t.quantity or 1), 2) if act == "BUY" else round((t.entry_price - exit_p) * (t.quantity or 1), 2)
+                if abs(calc_pnl) < 0.01 and abs(realised_pnl) > 0:
+                    calc_pnl = realised_pnl
+
+                t.status = "CLOSED"
+                t.exit_price = round(exit_p, 2)
+                t.pnl = round(calc_pnl, 2)
+                if t.entry_price and t.quantity and t.entry_price > 0:
+                    t.pnl_percent = round((t.pnl / (t.entry_price * t.quantity)) * 100, 2)
+                t.closed_at = datetime.utcnow()
+                print(f"🔄 [Journal Sync] Closed trade #{t.id} ({t.symbol}): Exit ₹{t.exit_price}, P&L ₹{t.pnl}")
+
+            # 2. Past-day trade still marked OPEN (MIS intraday squares off at 3:15 PM daily)
+            elif t.trade_date and t.trade_date < today_ist:
+                t.status = "CLOSED"
+                t.closed_at = datetime.combine(t.trade_date, datetime.min.time()) + timedelta(hours=15, minutes=15)
+                if not t.exit_price or t.exit_price <= 0:
+                    try:
+                        import yfinance as yf
+                        hist = yf.Ticker(clean_s + ".NS").history(start=str(t.trade_date), end=str(t.trade_date + timedelta(days=2)))
+                        if not hist.empty and "Close" in hist:
+                            t.exit_price = round(float(hist["Close"].iloc[0]), 2)
+                        else:
+                            t.exit_price = t.entry_price
+                    except Exception:
+                        t.exit_price = t.entry_price
+                act = (t.action or "BUY").upper()
+                q = t.quantity or 1
+                t.pnl = round(((t.exit_price or t.entry_price) - t.entry_price) * q, 2) if act == "BUY" else round((t.entry_price - (t.exit_price or t.entry_price)) * q, 2)
+                if t.entry_price and t.entry_price > 0:
+                    t.pnl_percent = round((t.pnl / (t.entry_price * q)) * 100, 2)
+                print(f"🔄 [Journal Sync] Auto-closed past-day trade #{t.id} ({t.symbol} on {t.trade_date}): Exit ₹{t.exit_price}, P&L ₹{t.pnl}")
+
+        db.commit()
+    except Exception as e:
+        print(f"⚠️ reconcile_live_trades_with_broker error: {e}")
+
+
+def reconcile_paper_trades(db):
+    """Auto-close past-day open paper trades at EOD."""
+    if not db:
+        return
+    try:
+        from datetime import datetime, timezone, timedelta
+        ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        today_ist = ist_now.date()
+        open_pts = db.query(PaperTrade).filter(PaperTrade.status == "OPEN").all()
+        for pt in open_pts:
+            if pt.trade_date and pt.trade_date < today_ist:
+                pt.status = "EOD_AUTO_SQUAREOFF"
+                pt.exit_price = pt.entry_price
+                pt.pnl = 0.0
+                pt.pnl_percent = 0.0
+                pt.closed_at = datetime.combine(pt.trade_date, datetime.min.time()) + timedelta(hours=15, minutes=30)
+        db.commit()
+    except Exception as e:
+        print(f"⚠️ reconcile_paper_trades error: {e}")
+
+
 def get_trades_list(mode: str = "paper", limit: int = 50):
     if not DB_AVAILABLE:
         return []
     try:
         db = SessionLocal()
+        if mode == "live":
+            reconcile_live_trades_with_broker(db)
+        else:
+            reconcile_paper_trades(db)
         model = LiveTrade if mode == "live" else PaperTrade
         trades = db.query(model).order_by(model.id.desc()).limit(limit).all()
         res = []
@@ -651,10 +818,10 @@ def get_paper_balance_calc():
         return 100000.0
 
 
-def calculate_position_size(entry_price: float, sl_price: float, risk_amount: float = 300.0) -> int:
+def calculate_position_size(entry_price: float, sl_price: float, risk_amount: float = 230.0) -> int:
     """
-    Calculate dynamic position size (shares) based on strict ₹300 total loss limit.
-    Formula: Quantity = max(1, int(300.0 / abs(Entry Price - SL Price)))
+    Calculate dynamic position size (shares) based on strict ₹300 NET loss limit (accounting for ₹60-70 Angel One taxes/brokerage).
+    Formula: Quantity = max(1, int(230.0 / abs(Entry Price - SL Price)))
     """
     try:
         p = float(entry_price or 0)
@@ -668,7 +835,7 @@ def calculate_position_size(entry_price: float, sl_price: float, risk_amount: fl
         return 1
 
 
-def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mode="paper", order_type="MARKET"):
+def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mode="paper", order_type="MARKET", scan_type="ultra_sniper"):
     current_mode = mode or config.get("trading_mode", "paper")
     clean_sym = symbol.upper().strip().replace(".NS", "-EQ")
     if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
@@ -686,25 +853,36 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
 
     p = float(price or 0)
     sl_val = float(sl or 0)
+    if (sl_val <= 0) and p > 0:
+        is_buy = action.upper() == "BUY"
+        sl_val = round(p * (0.988 if is_buy else 1.012), 2)
+
     t1_val = float(t1 or 0)
     t2_val = float(t2 or 0)
+    if (t1_val <= 0) and p > 0:
+        t1_val = round(p * (1.015 if action.upper() == "BUY" else 0.985), 2)
+    if (t2_val <= 0) and p > 0:
+        t2_val = round(p * (1.030 if action.upper() == "BUY" else 0.970), 2)
     
-    # 📐 Dynamic ₹300 Position Sizing: Qty = int(300 / |Entry - SL|)
-    calc_qty = calculate_position_size(p, sl_val, 300.0)
-    q = int(qty) if (qty and int(qty) > 0) else calc_qty
+    # 📐 Dynamic Net ₹300 Position Sizing (Gross Stock Risk ₹230 + Taxes/Brokerage ~₹60 = Net ₹290 Cap)
+    calc_qty = calculate_position_size(p, sl_val, 230.0)
+    q = min(int(qty), calc_qty) if (qty and int(qty) > 0) else calc_qty
     q = max(1, q)
     import time
 
     if current_mode == "paper":
         tid = save_paper_trade_db(clean_sym, action, q, p, sl_val, t1_val, t2_val)
-        register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
+        if tid:
+            LOCAL_PAPER_SCAN_TYPE[tid] = scan_type
+        register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val, scan_type=scan_type)
         tg_msg = (
             f"📝 <b>PAPER TRADE EXECUTED</b>\n"
             f"<b>Symbol:</b> {clean_sym}\n"
             f"<b>Action:</b> {action.upper()}\n"
             f"<b>Qty:</b> {q} (₹300 Risk Sizing)\n"
             f"<b>Entry Price:</b> ₹{p:.2f}\n"
-            f"<b>SL:</b> ₹{sl_val:.2f} | <b>T1:</b> ₹{t1_val:.2f} | <b>T2:</b> ₹{t2_val:.2f}"
+            f"<b>SL:</b> ₹{sl_val:.2f} | <b>T1:</b> ₹{t1_val:.2f} | <b>T2:</b> ₹{t2_val:.2f}\n"
+            f"<b>Strategy:</b> {scan_type.upper().replace('_', ' ')}"
         )
         send_telegram_message(tg_msg)
         return {
@@ -720,6 +898,7 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             "sl_placed": True,
             "sl_order_id": f"PAPER-SL-{tid or int(time.time())}",
             "order_id": f"PAPER-{tid or int(time.time())}",
+            "scan_type": scan_type,
             "message": f"🎉 PAPER TRADE PLACED SUCCESSFULLY!\nSymbol: {clean_sym}\nAction: {action.upper()}\nQty: {q}\nPrice: ₹{p:.2f}\nRisk Cap: ₹300.00"
         }
     else:
@@ -742,7 +921,7 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
                     sl_res = {"success": False, "message": str(e)}
 
             try:
-                register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val)
+                register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val, scan_type=scan_type)
                 if sl_res.get("sl_order_id") and clean_sym in LOCAL_SL_TRACKER:
                     LOCAL_SL_TRACKER[clean_sym]["sl_order_id"] = sl_res["sl_order_id"]
             except Exception as e:
@@ -750,11 +929,11 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
 
             sl_placed = sl_res.get("success", False)
             sl_oid = sl_res.get("sl_order_id")
+            sl_err = sl_res.get("message", "Broker rejected SL order") if not sl_placed else ""
             if sl_placed:
                 sl_note = f"\n🛡️ <b>Exchange SL Order:</b> PLACED (ID: {sl_oid} @ ₹{sl_val:.2f})"
                 sl_summary = f"Exchange SL Placed (#{sl_oid})"
             else:
-                sl_err = sl_res.get("message", "Broker rejected SL order")
                 sl_note = f"\n⚠️ <b>Exchange SL:</b> {sl_err} (Local SL Guard Monitor is ACTIVE in background!)"
                 sl_summary = f"Local SL Guard Active ({sl_err})"
 
@@ -767,12 +946,14 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
                 f"<b>SL:</b> ₹{sl_val:.2f}\n"
                 f"<b>Order ID:</b> {order_id}"
                 f"{sl_note}\n"
-                f"🎯 <b>Targets:</b> T1 ₹{t1_val:.2f} | T2 ₹{t2_val:.2f}"
+                f"🎯 <b>Targets:</b> T1 ₹{t1_val:.2f} | T2 ₹{t2_val:.2f}\n"
+                f"<b>Strategy:</b> {scan_type.upper().replace('_', ' ')}"
             )
             send_telegram_message(tg_msg)
 
             res["sl_order_id"] = sl_oid
             res["sl_placed"] = sl_placed
+            res["sl_message"] = sl_err
             res["sl_summary"] = sl_summary
             res["symbol"] = clean_sym
             res["action"] = action.upper()
@@ -781,6 +962,7 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             res["sl_price"] = sl_val
             res["target1"] = t1_val
             res["target2"] = t2_val
+            res["scan_type"] = scan_type
             res["message"] = (
                 f"🎉 LIVE ORDER EXECUTED ON ANGEL ONE!\n\n"
                 f"📌 Stock: {clean_sym} ({action.upper()})\n"
@@ -917,8 +1099,11 @@ def get_live_balance():
 
 
 def get_live_positions():
+    global auth_session
     if not auth_session.get("jwtToken"):
-        return {"positions": [], "connected": False}
+        lres = login_smartapi()
+        if not lres.get("success"):
+            return {"positions": [], "connected": False, "error": lres.get("message", "Not logged in")}
 
     my_ip = auth_session.get("my_ip", get_my_ip())
     headers = {
@@ -933,6 +1118,18 @@ def get_live_positions():
         "MACAddress": "fe-80-00-00-00-00"
     }
     res = api_call(f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/getPosition", headers=headers, method="GET")
+
+    # Silent Auto-Relogin Interceptor for expired/invalid session
+    if res.get("status") is not True:
+        err = str(res.get("message", "")).lower()
+        if any(w in err for w in ("token", "jwt", "session", "unauthorized", "invalid", "ag8001", "ab8050", "ab1006")):
+            print("🔄 [Auto-Relogin] Token expired during getPosition, refreshing session...")
+            lres = login_smartapi()
+            if lres.get("success"):
+                headers["Authorization"] = f"Bearer {auth_session['jwtToken']}"
+                headers["X-ClientPublicIP"] = auth_session.get("my_ip", my_ip)
+                res = api_call(f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/getPosition", headers=headers, method="GET")
+
     if res.get("status") is True and "data" in res:
         return {"positions": res.get("data") or [], "connected": True}
     return {"positions": [], "connected": False, "error": res.get("message")}
@@ -1068,6 +1265,8 @@ def place_order(symbol, symbol_token, action, qty, price=0, exchange="NSE", orde
         msg = result.get("message", "Unknown error")
         if "registered ip" in msg.lower() or "not a registered ip" in msg.lower() or "ab1012" in msg.lower():
             msg = f"❌ Angel One IP Rejection: Your current IP ({my_ip}) is not registered. Please open https://smartapi.angelone.in/ -> My Apps -> Edit App -> Add IP: {my_ip}"
+        elif "cautionary" in msg.lower() or "surveillance" in msg.lower() or "ab1008" in msg.lower():
+            msg = f"⚠️ Exchange Cautionary Listing: {clean_sym} is listed under Cautionary/Surveillance (GSM/ESM) by NSE. Angel One blocks Intraday API orders for this token. Please pick a liquid stock like INFY, HDFCBANK, SBIN, ITC."
         return {"success": False, "message": msg}
 
 
@@ -1128,43 +1327,68 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
     }
 
     last_res = {}
+    # Try combinations of variety ("STOPLOSS", "NORMAL") and ordertype ("STOPLOSS_LIMIT", "STOPLOSS_MARKET")
     for variety_type in ["STOPLOSS", "NORMAL"]:
-        payload = {
-            "variety": variety_type,
-            "tradingsymbol": clean_sym,
-            "symboltoken": str(symbol_token),
-            "transactiontype": counter_action,
-            "exchange": exchange.upper(),
-            "ordertype": "STOPLOSS_LIMIT",
-            "producttype": product.upper(),
-            "duration": "DAY",
-            "price": str(limit_p),
-            "triggerprice": str(trigger_p),
-            "quantity": str(max(1, int(qty))),
-            "squareoff": "0.00",
-            "stoploss": "0.00"
-        }
-
-        url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/placeOrder"
-        result = api_call(url, payload, headers)
-        last_res = result
-        if result.get("status") is True and "data" in result:
-            sl_order_id = result["data"].get("uniqueorderid") or result["data"].get("orderid")
-            print(f"🛡️ Angel One Exchange SL Order Placed! ID: {sl_order_id} (Variety: {variety_type}) | Trigger: ₹{trigger_p:.2f} | Limit: ₹{limit_p:.2f}")
-            return {
-                "success": True, 
-                "sl_order_id": sl_order_id, 
-                "trigger_price": trigger_p, 
-                "limit_price": limit_p, 
+        for order_t in ["STOPLOSS_LIMIT", "STOPLOSS_MARKET"]:
+            payload = {
                 "variety": variety_type,
-                "message": f"Exchange SL Order Placed: {sl_order_id}"
+                "tradingsymbol": clean_sym,
+                "symboltoken": str(symbol_token),
+                "transactiontype": counter_action,
+                "exchange": exchange.upper(),
+                "ordertype": order_t,
+                "producttype": product.upper(),
+                "duration": "DAY",
+                "price": str(limit_p) if order_t == "STOPLOSS_LIMIT" else "0",
+                "triggerprice": str(trigger_p),
+                "quantity": str(max(1, int(qty))),
+                "squareoff": "0.00",
+                "stoploss": "0.00"
             }
+
+            url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/placeOrder"
+            result = api_call(url, payload, headers)
+            last_res = result
+
+            if result.get("status") is not True:
+                err_str = str(result.get("message", "")).lower()
+                if any(w in err_str for w in ("token", "jwt", "session", "unauthorized", "ag8001", "ab8050")):
+                    print("🔄 [Auto-Relogin] Token expired during SL placement in Local Trader, refreshing session...")
+                    lres = login_smartapi()
+                    if lres.get("success"):
+                        headers["Authorization"] = f"Bearer {auth_session['jwtToken']}"
+                        result = api_call(url, payload, headers)
+                        last_res = result
+
+            if result.get("status") is True and "data" in result:
+                sl_order_id = result["data"].get("uniqueorderid") or result["data"].get("orderid")
+                print(f"🛡️ Angel One Exchange SL Order Placed! ID: {sl_order_id} (Variety: {variety_type}, Type: {order_t}) | Trigger: ₹{trigger_p:.2f}")
+                return {
+                    "success": True, 
+                    "sl_order_id": sl_order_id, 
+                    "trigger_price": trigger_p, 
+                    "limit_price": limit_p if order_t == "STOPLOSS_LIMIT" else trigger_p, 
+                    "variety": variety_type,
+                    "order_type": order_t,
+                    "message": f"Exchange SL Order Placed: {sl_order_id}"
+                }
 
     err_msg = last_res.get("message", "SL Order rejected")
     if "registered ip" in err_msg.lower() or "not a registered ip" in err_msg.lower() or "ab1012" in err_msg.lower():
         err_msg = f"Angel One IP Rejection: Current IP ({my_ip}) not registered in smartapi.angelone.in"
     print(f"⚠️ Angel One Exchange SL Order note: {err_msg} (Local SL Guard Monitor active in background)")
-    return {"success": False, "message": err_msg}
+    try:
+        send_telegram_message(
+            f"🚨 <b>CRITICAL: BROKER STOP-LOSS FAILED</b>\n\n"
+            f"• <b>Symbol:</b> {clean_sym}\n"
+            f"• <b>Trigger Price:</b> ₹{trigger_p:.2f}\n"
+            f"• <b>Broker Error:</b> {err_msg}\n"
+            f"• <b>Local Guard:</b> ACTIVE in background! (₹300 Net Loss Cap)\n"
+            f"• <b>Action:</b> You can enter SL manually in Angel One App at ₹{trigger_p:.2f} for 100% safety! 📱"
+        )
+    except Exception:
+        pass
+    return {"success": False, "message": err_msg, "sl_price": trigger_p}
 
 
 def cancel_smartapi_order(order_id: str, variety: str = "STOPLOSS") -> dict:
@@ -1203,7 +1427,7 @@ SL_AUTO_PLACED = {}      # {sym: True}  tracks if we already auto-placed exchang
 SL_AUTO_DELAY_SECS = 180  # 3 minutes after detecting open position → auto-place exchange SL
 
 
-def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty: int, entry_price: float, stop_loss: float = 0, target1: float = 0, target2: float = 0):
+def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty: int, entry_price: float, stop_loss: float = 0, target1: float = 0, target2: float = 0, scan_type: str = "ultra_sniper"):
     """Register trade in local SL monitor engine with strict ₹300 loss cap."""
     clean_sym = symbol.upper().strip()
     if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE") and not clean_sym.endswith(".NS"):
@@ -1243,9 +1467,11 @@ def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty:
         "peak_price":          p,
         "reversal_alert_sent": False,
         "last_reversal_check": 0.0,
-        "registered_at":       time.time()
+        "registered_at":       time.time(),
+        "scan_type":           scan_type
     }
-    print(f"🛡️ Local SL Monitor Locked for {clean_sym}: Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300 | Target ₹150 Conversion Guard Active | Dynamic 20% Trailing Peak Lock Active)")
+    mode_desc = "👑 Ultra-Sniper ₹30 Profit Lock" if scan_type == "ultra_sniper" else "🌊 Deep Scan ₹50 Swing Trailing"
+    print(f"🛡️ Local SL Monitor Locked for {clean_sym} ({mode_desc}): Entry ₹{p:.2f} | SL ₹{sl:.2f} (Max Loss Cap ₹300)")
 
 
 
@@ -1254,6 +1480,7 @@ LOCAL_PAPER_PEAKS: dict[int, float] = {}
 LOCAL_PAPER_PEAK_PRICES: dict[int, float] = {}
 LOCAL_PAPER_REVERSALS: dict[int, float] = {}
 LOCAL_PAPER_NOTIFIED_REV: set[int] = set()
+LOCAL_PAPER_SCAN_TYPE: dict[int, str] = {}
 
 
 def _local_sl_monitor_thread():
@@ -1350,10 +1577,18 @@ def _local_sl_monitor_thread():
                                     LOCAL_PAPER_PEAK_PRICES[pt.id] = p_peak
                                 p_drop = cmp_price - p_peak
 
-                            pullback_allowed = max(30.0, curr_peak * 0.20)
-                            min_price_buf = max(0.20, ep * 0.002)
+                            pullback_allowed = 30.0
+                            min_price_buf = max(0.10, ep * 0.001)
 
-                            if curr_peak >= 120.0 and (curr_peak - pnl) >= pullback_allowed and pnl > 0 and p_drop >= min_price_buf:
+                            pt_scan = LOCAL_PAPER_SCAN_TYPE.get(pt.id, "ultra_sniper")
+                            if pt_scan == "ultra_sniper":
+                                is_paper_lock = (curr_peak >= 100.0 and ((curr_peak - pnl) >= 30.0 or pnl <= 10.0) and pnl > 0)
+                                lock_desc = f"👑 ULTRA SNIPER ₹30 PROFIT LOCKED"
+                            else:
+                                is_paper_lock = (curr_peak >= 150.0 and ((curr_peak - pnl) >= 50.0 or pnl <= 25.0) and pnl > 0)
+                                lock_desc = f"🌊 DEEP SCAN ₹50 SWING TRAILING LOCKED"
+
+                            if is_paper_lock:
                                 pt.status = "PROFIT_LOCK"
                                 pt.exit_price = cmp_price
                                 pt.pnl = pnl
@@ -1364,7 +1599,8 @@ def _local_sl_monitor_thread():
                                 LOCAL_PAPER_PEAK_PRICES.pop(pt.id, None)
                                 LOCAL_PAPER_REVERSALS.pop(pt.id, None)
                                 LOCAL_PAPER_NOTIFIED_REV.discard(pt.id)
-                                send_telegram_message(f"💰 <b>PAPER TRADE DYNAMIC 20% PROFIT LOCKED</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nLocked P&L: +₹{pnl:.2f} (Peak: +₹{curr_peak:.2f})")
+                                LOCAL_PAPER_SCAN_TYPE.pop(pt.id, None)
+                                send_telegram_message(f"💰 <b>PAPER TRADE {lock_desc}</b>\nSymbol: {sym}\nExit: ₹{cmp_price:.2f}\nLocked P&L: +₹{pnl:.2f} (Peak: +₹{curr_peak:.2f})")
 
                             # SL Hit check
                             elif (act == "BUY" and sl_price > 0 and cmp_price <= sl_price) or \
@@ -1409,6 +1645,13 @@ def _local_sl_monitor_thread():
                 LOCAL_SL_TRACKER.clear()
                 POSITION_FIRST_SEEN.clear()
                 SL_AUTO_PLACED.clear()
+                if DB_AVAILABLE:
+                    try:
+                        db_mon = SessionLocal()
+                        reconcile_live_trades_with_broker(db_mon)
+                        db_mon.close()
+                    except Exception:
+                        pass
                 continue
 
             ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
@@ -1444,8 +1687,12 @@ def _local_sl_monitor_thread():
                     pos = open_positions[sym]
                     pos_qty  = abs(int(pos.get("netqty") or 0))
                     net_qty  = int(pos.get("netqty") or 0)
-                    pos_act  = "BUY" if net_qty > 0 else "SELL"
-                    avg_p    = float(pos.get("avgprice") or pos.get("buyprice") or pos.get("sellprice") or 0)
+                    if pos_act == "BUY":
+                        avg_p = float(pos.get("buyavgprice") or pos.get("totalbuyavgprice") or pos.get("avgprice") or pos.get("buyprice") or pos.get("averageprice") or 0)
+                    else:
+                        avg_p = float(pos.get("sellavgprice") or pos.get("totalsellavgprice") or pos.get("avgprice") or pos.get("sellprice") or pos.get("averageprice") or 0)
+                    if avg_p <= 0:
+                        avg_p = float(pos.get("netprice") or guard_sl_info.get("entry_price") or 0)
                     pos_tok  = pos.get("symboltoken") or ""
 
                     # Resolve token if missing
@@ -1524,12 +1771,18 @@ def _local_sl_monitor_thread():
                 net_qty = int(pos.get("netqty") or 0)
                 action = "BUY" if net_qty > 0 else "SELL"
                 reverse_action = "SELL" if action == "BUY" else "BUY"
-
-                avg_price = float(pos.get("avgprice") or pos.get("buyprice") or pos.get("sellprice") or 0)
+                if action == "BUY":
+                    avg_price = float(pos.get("buyavgprice") or pos.get("totalbuyavgprice") or pos.get("avgprice") or pos.get("buyprice") or pos.get("averageprice") or 0)
+                else:
+                    avg_price = float(pos.get("sellavgprice") or pos.get("totalsellavgprice") or pos.get("avgprice") or pos.get("sellprice") or pos.get("averageprice") or 0)
+                if avg_price <= 0:
+                    avg_price = float(pos.get("netprice") or 0)
                 tok = pos.get("symboltoken", "")
 
                 clean_sym = sym.replace("-EQ", "").strip()
                 guard_info = LOCAL_SL_TRACKER.get(sym) or LOCAL_SL_TRACKER.get(f"{sym}-EQ") or LOCAL_SL_TRACKER.get(clean_sym)
+                if avg_price <= 0 and guard_info:
+                    avg_price = float(guard_info.get("entry_price") or 0)
                 if not guard_info:
                     guard_info = {
                         "symbol":              clean_sym,
@@ -1566,22 +1819,33 @@ def _local_sl_monitor_thread():
                     target2 = round(avg_price * 1.030 if action == "BUY" else avg_price * 0.970, 2)
 
                 # ── STEP 1: Fetch Real-Time Live Price (CMP) First ──
-                yf_sym = sym.replace("-EQ", ".NS").replace("-BE", ".NS")
-                cmp_price = 0.0
-                try:
-                    ticker = yf.Ticker(yf_sym)
-                    fi = getattr(ticker, "fast_info", None)
-                    if fi and getattr(fi, "last_price", None) and float(fi.last_price) > 0:
-                        cmp_price = float(fi.last_price)
-                    elif fi and getattr(fi, "lastPrice", None) and float(fi.lastPrice) > 0:
-                        cmp_price = float(fi.lastPrice)
-                except Exception:
-                    pass
+                # 1st Priority: Angel One position LTP (Zero-latency instant broker tick)
+                cmp_price = float(pos.get("ltp") or pos.get("close") or 0.0)
 
-                if cmp_price <= 0:
-                    cmp_price = float(pos.get("ltp") or pos.get("close") or 0)
+                # 2nd Priority: SmartAPI live quote query if pos.ltp is 0
+                if cmp_price <= 0 and tok:
+                    try:
+                        from backend.broker_angelone import get_smartapi_ltp
+                        ltp_val = get_smartapi_ltp(auth_session, tok, sym)
+                        if ltp_val and ltp_val > 0:
+                            cmp_price = ltp_val
+                    except Exception:
+                        pass
 
+                # 3rd Priority: Yahoo Finance as fallback only if broker did not return price
                 if cmp_price <= 0:
+                    yf_sym = sym.replace("-EQ", ".NS").replace("-BE", ".NS")
+                    try:
+                        ticker = yf.Ticker(yf_sym)
+                        fi = getattr(ticker, "fast_info", None)
+                        if fi and getattr(fi, "last_price", None) and float(fi.last_price) > 0:
+                            cmp_price = float(fi.last_price)
+                        elif fi and getattr(fi, "lastPrice", None) and float(fi.lastPrice) > 0:
+                            cmp_price = float(fi.lastPrice)
+                    except Exception:
+                        pass
+
+                if cmp_price <= 0 or avg_price <= 0:
                     continue
 
                 # ── STEP 1: Compute Live P&L ──
@@ -1660,73 +1924,91 @@ def _local_sl_monitor_thread():
                     except Exception:
                         pass
 
-                # ── STEP 2: ₹100 PROFIT REACHED -> CONVERT SL TO TARGET ₹150 LIMIT ORDER ──
-                if live_pnl >= 100.0 and not guard_info.get("converted_to_target"):
-                    guard_info["converted_to_target"] = True
-                    print(f"🎯 ₹100 PROFIT HIT for {sym}! (Current P&L: +₹{live_pnl:.2f}). Converting SL to Target ₹150 Limit Order...")
+                scan_type = guard_info.get("scan_type", "ultra_sniper")
 
-                    # 1. Cancel existing pending exchange SL order
-                    old_sl_id = guard_info.get("sl_order_id")
-                    if old_sl_id:
-                        try:
-                            print(f"🗑️ Cancelling Exchange SL Order {old_sl_id} for {sym} to switch to Target Order...")
-                            cancel_smartapi_order(old_sl_id, variety="STOPLOSS")
-                        except Exception as _ce:
-                            print(f"⚠️ Cancel SL error: {_ce}")
-                        guard_info["sl_order_id"] = None
+                # ── STEP 2: ₹100 PROFIT REACHED -> PROFIT LOCK STRATEGY ──
+                if scan_type == "ultra_sniper":
+                    # Ultra-Sniper: Option to convert to Target ₹150 Limit order
+                    if live_pnl >= 100.0 and not guard_info.get("converted_to_target"):
+                        guard_info["converted_to_target"] = True
+                        print(f"🎯 ₹100 PROFIT HIT for {sym} (Ultra Sniper)! (Current P&L: +₹{live_pnl:.2f}). Converting SL to Target ₹150 Limit Order...")
 
-                    # 2. Calculate Target Price for ₹150 Profit (rounded to NSE 0.05 tick size)
-                    target_pts = 150.0 / max(1, qty)
-                    target_raw = (avg_price + target_pts) if action == "BUY" else (avg_price - target_pts)
-                    target_price = round(round(target_raw / 0.05) * 0.05, 2)
-                    guard_info["target_150_price"] = target_price
+                        # 1. Cancel existing pending exchange SL order
+                        old_sl_id = guard_info.get("sl_order_id")
+                        if old_sl_id:
+                            try:
+                                print(f"🗑️ Cancelling Exchange SL Order {old_sl_id} for {sym} to switch to Target Order...")
+                                cancel_smartapi_order(old_sl_id, variety="STOPLOSS")
+                            except Exception as _ce:
+                                print(f"⚠️ Cancel SL error: {_ce}")
+                            guard_info["sl_order_id"] = None
 
-                    # 3. Place new exchange TARGET LIMIT order
-                    tgt_order_id = None
-                    pos_order_tok = tok or pos.get("symboltoken") or ""
-                    if not pos_order_tok or str(pos_order_tok).strip() in ("", "None", "0"):
-                        pos_order_tok = STOCK_TOKENS.get(sym) or STOCK_TOKENS.get(sym.replace("-EQ", ""))
+                        # 2. Calculate Target Price for ₹150 Profit (rounded to NSE 0.05 tick size)
+                        target_pts = 150.0 / max(1, qty)
+                        target_raw = (avg_price + target_pts) if action == "BUY" else (avg_price - target_pts)
+                        target_price = round(round(target_raw / 0.05) * 0.05, 2)
+                        guard_info["target_150_price"] = target_price
 
-                    if pos_order_tok:
-                        try:
-                            tgt_res = place_order(
-                                symbol=sym,
-                                symbol_token=str(pos_order_tok),
-                                action=reverse_action,
-                                qty=qty,
-                                price=target_price,
-                                order_type="LIMIT",
-                                product="INTRADAY"
-                            )
-                            if tgt_res.get("success"):
-                                tgt_order_id = tgt_res.get("order_id") or tgt_res.get("data", {}).get("orderid")
-                                guard_info["target_order_id"] = tgt_order_id
-                                print(f"✅ Exchange Target Limit Order Placed for {sym}: Order ID {tgt_order_id} @ ₹{target_price:.2f}")
-                            else:
-                                print(f"⚠️ Exchange Target Order response: {tgt_res}")
-                        except Exception as _te:
-                            print(f"⚠️ Exchange Target Order error: {_te}")
+                        # 3. Place new exchange TARGET LIMIT order
+                        tgt_order_id = None
+                        pos_order_tok = tok or pos.get("symboltoken") or ""
+                        if not pos_order_tok or str(pos_order_tok).strip() in ("", "None", "0"):
+                            pos_order_tok = STOCK_TOKENS.get(sym) or STOCK_TOKENS.get(sym.replace("-EQ", ""))
 
-                    # 4. Trail local emergency SL to Entry Price (Cost-to-Cost / Breakeven)
-                    guard_info["stop_loss"] = avg_price
-                    sl_price = avg_price
-                    guard_info["t1_trailed"] = True
+                        if pos_order_tok:
+                            try:
+                                tgt_res = place_order(
+                                    symbol=sym,
+                                    symbol_token=str(pos_order_tok),
+                                    action=reverse_action,
+                                    qty=qty,
+                                    price=target_price,
+                                    order_type="LIMIT",
+                                    product="INTRADAY"
+                                )
+                                if tgt_res.get("success"):
+                                    tgt_order_id = tgt_res.get("order_id") or tgt_res.get("data", {}).get("orderid")
+                                    guard_info["target_order_id"] = tgt_order_id
+                                    print(f"✅ Exchange Target Limit Order Placed for {sym}: Order ID {tgt_order_id} @ ₹{target_price:.2f}")
+                                else:
+                                    print(f"⚠️ Exchange Target Order response: {tgt_res}")
+                            except Exception as _te:
+                                print(f"⚠️ Exchange Target Order error: {_te}")
 
-                    # 5. Telegram Notification
-                    tgt_note = f"Order ID: <code>{tgt_order_id}</code>" if tgt_order_id else "Local Surveillance Active"
-                    send_telegram_message(
-                        f"🎯 <b>₹100 PROFIT HIT — SL CONVERTED TO TARGET!</b>\n\n"
-                        f"• <b>Symbol:</b> {sym}\n"
-                        f"• <b>Current P&L:</b> +₹{live_pnl:.2f}\n"
-                        f"• <b>Status:</b> Pending SL Cancelled ❌\n"
-                        f"• <b>New Target Order:</b> LIMIT SELL @ ₹{target_price:.2f} (+₹150 Goal) 🎯\n"
-                        f"• <b>Exchange Order:</b> {tgt_note}\n"
-                        f"• <b>Zero-Risk Lock:</b> SL moved to Entry ₹{avg_price:.2f} (Breakeven) 🛡️\n"
-                        f"• <b>Capital:</b> 100% Protected (Zero Loss Possible)!"
-                    )
+                        # 4. Trail local emergency SL to Entry Price (Cost-to-Cost / Breakeven)
+                        guard_info["stop_loss"] = avg_price
+                        sl_price = avg_price
+                        guard_info["t1_trailed"] = True
+
+                        # 5. Telegram Notification
+                        tgt_note = f"Order ID: <code>{tgt_order_id}</code>" if tgt_order_id else "Local Surveillance Active"
+                        send_telegram_message(
+                            f"🎯 <b>₹100 PROFIT HIT — SL CONVERTED TO TARGET!</b>\n\n"
+                            f"• <b>Symbol:</b> {sym}\n"
+                            f"• <b>Current P&L:</b> +₹{live_pnl:.2f}\n"
+                            f"• <b>Status:</b> Pending SL Cancelled ❌\n"
+                            f"• <b>New Target Order:</b> LIMIT SELL @ ₹{target_price:.2f} (+₹150 Goal) 🎯\n"
+                            f"• <b>Exchange Order:</b> {tgt_note}\n"
+                            f"• <b>Zero-Risk Lock:</b> SL moved to Entry ₹{avg_price:.2f} (Breakeven) 🛡️\n"
+                            f"• <b>Capital:</b> 100% Protected (Zero Loss Possible)!"
+                        )
+                else:
+                    # Deep AI Scan: Do NOT cap trade at ₹150! Move SL to entry at ₹100 profit so trade is 100% risk-free, and let the ₹50 swing trailing ride huge multi-hour moves!
+                    if live_pnl >= 100.0 and not guard_info.get("t1_trailed"):
+                        guard_info["stop_loss"] = avg_price
+                        guard_info["t1_trailed"] = True
+                        sl_price = avg_price
+                        print(f"🛡️ DEEP SCAN ZERO-RISK LOCK: {sym} reached +₹{live_pnl:.2f}! SL moved to Entry ₹{avg_price:.2f}. Letting swing trend ride with ₹50 buffer!")
+                        send_telegram_message(
+                            f"🛡️ <b>DEEP SCAN ZERO-RISK PROFIT LOCK!</b>\n\n"
+                            f"• <b>Symbol:</b> {sym}\n"
+                            f"• <b>Current P&L:</b> +₹{live_pnl:.2f}\n"
+                            f"• <b>Trailing SL:</b> Moved to Entry ₹{avg_price:.2f} (Breakeven) 🛡️\n"
+                            f"• <b>Status:</b> Zero Risk | ₹50 Swing Trailing Active for Full Trend Run (+₹400, +₹800+) 🚀"
+                        )
 
                 # ── STEP 2B: Zero-Risk Dynamic Profit Lock for T1 if not converted ──
-                elif target1 > 0 and not guard_info.get("t1_trailed") and not guard_info.get("converted_to_target"):
+                if target1 > 0 and not guard_info.get("t1_trailed") and not guard_info.get("converted_to_target"):
                     t1_hit = (action == "BUY" and cmp_price >= target1) or (action == "SELL" and cmp_price <= target1)
                     if t1_hit:
                         guard_info["stop_loss"] = avg_price
@@ -1744,33 +2026,34 @@ def _local_sl_monitor_thread():
                 should_exit = False
                 exit_reason = ""
 
-                # Trigger 0: Dedicated ₹150 Target Profit Hit!
+                # Trigger 0: Dedicated ₹150 Target Profit Hit (Only for Ultra Sniper converted orders)
                 tgt_150_p = guard_info.get("target_150_price", 0)
-                if live_pnl >= 148.0 or (tgt_150_p > 0 and ((action == "BUY" and cmp_price >= tgt_150_p) or (action == "SELL" and cmp_price <= tgt_150_p))):
+                pullback_drop = current_peak - live_pnl
+
+                if scan_type == "ultra_sniper" and (live_pnl >= 148.0 or (tgt_150_p > 0 and ((action == "BUY" and cmp_price >= tgt_150_p) or (action == "SELL" and cmp_price <= tgt_150_p)))):
                     should_exit = True
                     exit_reason = f"TARGET ₹150 PROFIT HIT (P&L: +₹{live_pnl:.2f} | CMP ₹{cmp_price:.2f})"
 
-                # Trigger 0B: FILTER 2 - Dynamic 20% Trailing Peak Profit Lock (Noise Protected)
-                # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
-                # Peak ₹150 -> 20% pullback (₹30) -> Locks +₹120
-                # Peak ₹300 -> 20% pullback (₹60) -> Locks +₹240
-                # Peak ₹500 -> 20% pullback (₹100) -> Locks +₹400
-                pullback_allowed = max(30.0, current_peak * 0.20)
-                min_price_buffer = max(0.20, avg_price * 0.002)  # Noise filter: min 4-5 ticks or 0.2% price move
-
-                if current_peak >= 120.0 and live_pnl <= (current_peak - pullback_allowed) and live_pnl > 0 and price_drop_from_peak >= min_price_buffer:
+                # Trigger 0B: DYNAMIC TRAILING PROFIT LOCK (Mode-Specific)
+                # 👑 ULTRA SNIPER QUICK TRAILING PROFIT LOCK: Activates after Peak >= ₹100; exits on any ₹30 pullback.
+                elif scan_type == "ultra_sniper" and current_peak >= 100.0 and (pullback_drop >= 30.0 or live_pnl <= 10.0) and live_pnl > 0:
                     should_exit = True
-                    exit_reason = f"DYNAMIC 20% PEAK PROFIT LOCK (Peak: +₹{current_peak:.2f} ➔ Retraced 20% to +₹{live_pnl:.2f} | Locked +₹{live_pnl:.2f} Profit)"
+                    exit_reason = f"👑 ULTRA SNIPER ₹30 PEAK PROFIT LOCK (Peak: +₹{current_peak:.2f} ➔ Retraced ₹{pullback_drop:.2f} to +₹{live_pnl:.2f} | Locked +₹{live_pnl:.2f} Profit)"
+
+                # 🌊 DEEP AI SCAN SWING TRAILING PROFIT LOCK: Activates after Peak >= ₹150; exits on ₹50 pullback from peak.
+                elif scan_type != "ultra_sniper" and current_peak >= 150.0 and (pullback_drop >= 50.0 or live_pnl <= 25.0) and live_pnl > 0:
+                    should_exit = True
+                    exit_reason = f"🌊 DEEP SCAN ₹50 SWING TRAILING PROFIT LOCK (Peak: +₹{current_peak:.2f} ➔ Retraced ₹{pullback_drop:.2f} to +₹{live_pnl:.2f} | Locked +₹{live_pnl:.2f} Profit)"
 
                 # Trigger 1: EOD Square-off at 3:10 PM
                 elif is_eod:
                     should_exit = True
                     exit_reason = "EOD_AUTO_SQUAREOFF (3:10 PM)"
 
-                # Trigger 2: Hard ₹300 Loss Cap Trigger
-                elif live_pnl <= -290.0:
+                # Trigger 2: Hard Net ₹300 Loss Cap Trigger (Gross Loss -₹230 + Taxes ~₹60 <= ₹290 Net Loss)
+                elif live_pnl <= -230.0:
                     should_exit = True
-                    exit_reason = f"HARD ₹300 LOSS CAP (Current Loss: -₹{abs(live_pnl):.2f})"
+                    exit_reason = f"HARD ₹300 NET LOSS CAP (Gross Loss: -₹{abs(live_pnl):.2f})"
 
                 # Trigger 3: SL Price Hit (or Trailed Breakeven SL after ₹100 conversion)
                 elif action == "BUY" and sl_price > 0 and cmp_price <= sl_price:
@@ -1845,6 +2128,7 @@ def _local_sl_monitor_thread():
                         f"• <b>P&L:</b> {'+' if live_pnl >= 0 else ''}₹{live_pnl:.2f}\n"
                         f"• <b>Status:</b> {'✅ SUCCESS' if res.get('success') else '⚠️ CHECK BROKER'}"
                     )
+                    close_live_trade_record(sym, cmp_price, live_pnl, exit_reason)
                     LOCAL_SL_TRACKER.pop(sym, None)
                     clean_sym = sym.replace("-EQ", "").strip()
                     LOCAL_SL_TRACKER.pop(clean_sym, None)
@@ -2024,6 +2308,63 @@ def _analyze_single_stock_local(stk):
         return None
 
 
+_last_scan_alert_ts = 0.0
+_alerted_signals = {}  # {symbol: action} to avoid sending duplicate alerts
+
+
+def broadcast_top_scan_signals_to_telegram(signals: list, scan_mode: str = "FAST 5M"):
+    """Broadcast top 1-2 high-conviction scan signals to Telegram with smart cooldown."""
+    global _last_scan_alert_ts, _alerted_signals
+    now = time.time()
+    # At least 30 seconds cooldown between Telegram signal alerts
+    if now - _last_scan_alert_ts < 30.0:
+        return
+
+    # Select top 2 signals with >= 88% confidence (or top 1 >= 85%)
+    top_picks = [s for s in signals if s.get("confidence", 0) >= 88][:2]
+    if not top_picks:
+        top_picks = [s for s in signals if s.get("confidence", 0) >= 85][:1]
+
+    if not top_picks:
+        return
+
+    # Filter out signals already alerted recently with same action
+    fresh_picks = []
+    for s in top_picks:
+        sym = s.get("symbol") or s.get("stock")
+        act = s.get("action")
+        if _alerted_signals.get(sym) != act:
+            fresh_picks.append(s)
+            _alerted_signals[sym] = act
+
+    if not fresh_picks:
+        return
+
+    _last_scan_alert_ts = now
+    lines = [f"🎯 <b>STOCKSENSE AI — {scan_mode.upper()} SCAN SIGNALS</b>\n"]
+    for i, s in enumerate(fresh_picks, 1):
+        sym = s.get("symbol") or s.get("stock")
+        act = s.get("action", "BUY")
+        badge = "🟢 BUY" if act == "BUY" else "🔴 SELL"
+        cmp_p = float(s.get("price") or s.get("entry_price") or 0.0)
+        t1 = float(s.get("target") or s.get("target1") or 0.0)
+        t2 = float(s.get("target2") or 0.0)
+        sl = float(s.get("stoploss") or s.get("stop_loss") or 0.0)
+        conf = s.get("confidence") or 0
+        rsi_val = s.get("rsi") or s.get("rsi_15m") or ""
+        rsi_txt = f" | 5m RSI: {rsi_val}" if rsi_val else ""
+
+        lines.append(
+            f"<b>{i}. {sym} — {badge}</b>\n"
+            f"• <b>CMP:</b> ₹{cmp_p:.2f} | <b>Confidence:</b> {conf}%\n"
+            f"• <b>Targets:</b> T1 ₹{t1:.2f} | T2 ₹{t2:.2f}\n"
+            f"• <b>Stop Loss:</b> ₹{sl:.2f}{rsi_txt}"
+        )
+
+    lines.append("\n⚡ <i>Open Mobile Dashboard to execute 1-Click: http://192.168.1.229:8888</i>")
+    send_telegram_message("\n\n".join(lines))
+
+
 def run_instant_market_scan(category="all"):
     """Scan market in parallel within 1.5 seconds!"""
     from concurrent.futures import ThreadPoolExecutor
@@ -2050,6 +2391,13 @@ def run_instant_market_scan(category="all"):
 
     # Sort high confidence signals first
     signals.sort(key=lambda x: (x["confidence"], abs(x.get("change_pct", 0))), reverse=True)
+
+    # 📲 Broadcast top signals to Telegram!
+    try:
+        broadcast_top_scan_signals_to_telegram(signals, scan_mode=f"FAST {category.upper()}")
+    except Exception as _tge:
+        print(f"⚠️ Telegram signal broadcast error: {_tge}")
+
     return {"signals": signals, "total": len(signals), "category": category}
 
 
@@ -2554,7 +2902,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-bottom:16px;">
+                        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; margin-bottom:16px;">
                             <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
                                 <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Weekly Net P&L</div>
                                 <div id="j_weekly_pnl" style="font-size:18px; font-weight:900; color:#10b981; margin-top:4px;">+₹0.00</div>
@@ -2567,6 +2915,10 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Total Trades</div>
                                 <div id="j_total_trades" style="font-size:18px; font-weight:900; color:#60a5fa; margin-top:4px;">0</div>
                             </div>
+                            <div style="background:#0b1120; padding:12px; border-radius:10px; text-align:center; border:1px solid var(--border);">
+                                <div style="font-size:11px; color:var(--text-muted); font-weight:700; text-transform:uppercase;">Wins / Losses</div>
+                                <div id="j_wins_losses" style="font-size:16px; font-weight:900; margin-top:5px;"><span style="color:#10b981;">0W</span> / <span style="color:#ef4444;">0L</span></div>
+                            </div>
                         </div>
 
                         <div style="overflow-x:auto;">
@@ -2576,15 +2928,16 @@ HTML_PAGE = """<!DOCTYPE html>
                                         <th style="padding:10px;">Symbol</th>
                                         <th style="padding:10px;">Action</th>
                                         <th style="padding:10px;">Qty</th>
-                                        <th style="padding:10px;">Entry</th>
-                                        <th style="padding:10px;">Targets / SL</th>
+                                        <th style="padding:10px;">Entry Price</th>
+                                        <th style="padding:10px;">Exit Price</th>
+                                        <th style="padding:10px;">SL / Targets</th>
                                         <th style="padding:10px;">Status</th>
-                                        <th style="padding:10px;">P&L (₹)</th>
-                                        <th style="padding:10px;">Date</th>
+                                        <th style="padding:10px;">Net P&L</th>
+                                        <th style="padding:10px;">Date & Time</th>
                                     </tr>
                                 </thead>
                                 <tbody id="journal-trades-body">
-                                    <tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">Loading trade history...</td></tr>
+                                    <tr><td colspan="9" style="text-align:center; padding:20px; color:var(--text-muted);">Loading trade history...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -3271,10 +3624,13 @@ async function loadJournal(mode) {
         const wPnl = parseFloat(w.net_pnl || 0);
         const mPnl = parseFloat(mn.net_pnl || 0);
         const totalT = parseInt(w.total_trades || 0);
+        const wins = parseInt(w.wins || 0);
+        const losses = parseInt(w.losses || 0);
 
         const elW = document.getElementById('j_weekly_pnl');
         const elM = document.getElementById('j_monthly_pnl');
         const elT = document.getElementById('j_total_trades');
+        const elWL = document.getElementById('j_wins_losses');
 
         if (elW) {
             elW.textContent = (wPnl >= 0 ? '+' : '') + '₹' + wPnl.toFixed(2);
@@ -3285,6 +3641,9 @@ async function loadJournal(mode) {
             elM.style.color = mPnl >= 0 ? '#10b981' : '#ef4444';
         }
         if (elT) elT.textContent = totalT;
+        if (elWL) {
+            elWL.innerHTML = `<span style="color:#10b981;">${wins}W</span> / <span style="color:#ef4444;">${losses}L</span>`;
+        }
     } catch(e) {}
 
     // Load trades list
@@ -3295,29 +3654,40 @@ async function loadJournal(mode) {
 
         if (!tbody) return;
         if (!trades.length) {
-            tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:20px; color:var(--text-muted);">No ${mode} trades recorded yet.</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:20px; color:var(--text-muted);">No ${mode} trades recorded yet.</td></tr>`;
             return;
         }
 
         let html = '';
         trades.forEach(t => {
             const pnl = parseFloat(t.pnl || 0);
+            const pnlPct = parseFloat(t.pnl_percent || 0);
             const isBuy = t.action === 'BUY';
-            const stColor = t.status === 'CLOSED' || t.status === 'T1_HIT' ? '#10b981' : t.status === 'SL_HIT' ? '#ef4444' : '#f59e0b';
+            const isClosed = t.status !== 'OPEN';
+            const stColor = t.status === 'CLOSED' || t.status === 'T1_HIT' || t.status === 'T2_HIT' || t.status === 'PROFIT_LOCK' 
+                ? (pnl >= 0 ? '#10b981' : '#ef4444') 
+                : t.status === 'SL_HIT' || t.status === 'HARD_SL_BREAKER' ? '#ef4444' : '#f59e0b';
+            const exitStr = t.exit_price && parseFloat(t.exit_price) > 0 ? `₹${parseFloat(t.exit_price).toFixed(2)}` : '—';
+            const pnlStr = isClosed || pnl !== 0 
+                ? `<span style="font-weight:800; color:${pnl >= 0 ? '#10b981' : '#ef4444'};">${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(2)} (${pnl >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>` 
+                : '<span style="color:var(--text-muted);">Active</span>';
+            const timeStr = t.closed_at || t.opened_at || '';
+
             html += `<tr style="border-bottom:1px solid var(--border);">
                 <td style="padding:10px; font-weight:800;">${t.symbol}</td>
                 <td style="padding:10px;"><span class="badge ${isBuy ? 'badge-buy' : 'badge-sell'}">${t.action}</span></td>
                 <td style="padding:10px;">${t.quantity}</td>
-                <td style="padding:10px;">₹${parseFloat(t.entry_price).toFixed(2)}</td>
-                <td style="padding:10px; font-size:11px; color:var(--text-muted);">SL: ₹${parseFloat(t.stop_loss).toFixed(2)} | T1: ₹${parseFloat(t.target1).toFixed(2)}</td>
-                <td style="padding:10px;"><span style="color:${stColor}; font-weight:700;">${t.status}</span></td>
-                <td style="padding:10px; font-weight:800; color:${pnl >= 0 ? '#10b981' : '#ef4444'};">${pnl >= 0 ? '+' : ''}₹${pnl.toFixed(2)}</td>
-                <td style="padding:10px; font-size:11px; color:var(--text-muted);">${t.opened_at}</td>
+                <td style="padding:10px;">₹${parseFloat(t.entry_price || 0).toFixed(2)}</td>
+                <td style="padding:10px; font-weight:700; color:#93c5fd;">${exitStr}</td>
+                <td style="padding:10px; font-size:11px; color:var(--text-muted);">SL: ₹${parseFloat(t.stop_loss || 0).toFixed(2)} | T1: ₹${parseFloat(t.target1 || 0).toFixed(2)}</td>
+                <td style="padding:10px;"><span style="color:${stColor}; font-weight:700; padding:2px 6px; border-radius:4px; background:${stColor}15;">${t.status}</span></td>
+                <td style="padding:10px;">${pnlStr}</td>
+                <td style="padding:10px; font-size:11px; color:var(--text-muted);">${timeStr}</td>
             </tr>`;
         });
         tbody.innerHTML = html;
     } catch(e) {
-        if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#ef4444;">Failed to load trade history.</td></tr>';
+        if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:20px; color:#ef4444;">Failed to load trade history.</td></tr>';
     }
 }
 
@@ -3665,7 +4035,7 @@ function renderSniperHeroCard(s) {
             <span>🛡️ SL (Cap ₹300)<b style="color:#f87171; font-size:15px;">₹${sl}</b></span>
         </div>
 
-        <button class="btn ${isBuy ? 'btn-buy' : 'btn-sell'}" style="font-size:15px; padding:14px; font-weight:900; box-shadow:0 6px 20px rgba(0,0,0,0.4);" onclick="openTradeModal('${sym}', '${tok}', '${s.action}', ${qty}, ${price}, '${target1}', '${target2}', '${sl}')">
+        <button class="btn ${isBuy ? 'btn-buy' : 'btn-sell'}" style="font-size:15px; padding:14px; font-weight:900; box-shadow:0 6px 20px rgba(0,0,0,0.4);" onclick="openTradeModal('${sym}', '${tok}', '${s.action}', ${qty}, ${price}, '${target1}', '${target2}', '${sl}', 'ultra_sniper')">
             ⚡ EXECUTE LIVE ULTRA SNIPER TRADE (${qty} Qty @ ₹${price.toFixed(2)})
         </button>
     </div>`;
@@ -3730,7 +4100,7 @@ function renderSignals(sigs, deepMode) {
 
             <div class="sig-reason">${s.reasoning || s.ai_reason || 'RSI Breakout + SuperTrend Bullish confirmation on 5-min chart.'}</div>
 
-            <button class="btn ${isBuy ? 'btn-buy' : 'btn-sell'}" onclick="openTradeModal('${sym}', '${tok}', '${s.action}', ${qty}, ${price}, '${s.target || target}', '${s.target2 || (isBuy ? price*1.03 : price*0.97)}', '${s.stoploss || sl}')">
+            <button class="btn ${isBuy ? 'btn-buy' : 'btn-sell'}" onclick="openTradeModal('${sym}', '${tok}', '${s.action}', ${qty}, ${price}, '${s.target || target}', '${s.target2 || (isBuy ? price*1.03 : price*0.97)}', '${s.stoploss || sl}', '${s.scan_type || (deepMode ? 'deep_scan' : 'ultra_sniper')}')">
                 ⚡ LIVE ${s.action} (${qty} Qty @ ₹${price.toFixed(2)})
             </button>
         </div>`;
@@ -3752,7 +4122,10 @@ function showGlobalToast(msg, type='success') {
     }, 8000);
 }
 
-function openTradeModal(sym, tok, action, qty, price, target1, target2, sl) {
+let currentTradeScanType = 'ultra_sniper';
+
+function openTradeModal(sym, tok, action, qty, price, target1, target2, sl, scanType = 'ultra_sniper') {
+    currentTradeScanType = scanType;
     // Reset view to form
     const formCont = document.getElementById('modal_form_container');
     const succCont = document.getElementById('modal_success_container');
@@ -3785,9 +4158,9 @@ function openTradeModal(sym, tok, action, qty, price, target1, target2, sl) {
     const p = parseFloat(price) || 0;
     const slVal = sl ? parseFloat(sl) : (p * (isBuy ? 0.988 : 1.012));
     
-    // Dynamic ₹300 Risk Quantity
+    // Dynamic Net ₹300 Risk Quantity (Gross Stock Risk ₹230 + Taxes/Brokerage ~₹60 = Net ₹290 Cap)
     const riskPts = Math.abs(p - slVal) || (p * 0.01) || 1.0;
-    const calculatedQty = (qty && parseInt(qty) > 0) ? parseInt(qty) : Math.max(1, Math.floor(300.0 / riskPts));
+    const calculatedQty = Math.max(1, Math.floor(230.0 / riskPts));
 
     document.getElementById('modal_qty').value = calculatedQty;
     document.getElementById('modal_price').value = p.toFixed(2);
@@ -3817,7 +4190,7 @@ function updateModalMath(autoRecalcQty = false) {
 
     if (autoRecalcQty && p > 0 && sl > 0) {
         const riskPoints = Math.abs(p - sl) || (p * 0.01) || 1.0;
-        const autoQty = Math.max(1, Math.floor(300.0 / riskPoints));
+        const autoQty = Math.max(1, Math.floor(230.0 / riskPoints));
         document.getElementById('modal_qty').value = autoQty;
     }
 
@@ -3895,7 +4268,8 @@ async function executeModalOrder() {
                 stoploss: sl, 
                 target1: t1, 
                 target2: t2,
-                mode: currentTradingMode
+                mode: currentTradingMode,
+                scan_type: currentTradeScanType
             })
         });
         const d = await r.json();
@@ -3907,6 +4281,25 @@ async function executeModalOrder() {
             if (formCont && succCont) {
                 formCont.style.display = 'none';
                 succCont.style.display = 'block';
+
+                const slHtml = d.sl_placed ? `
+                    <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                        <span style="color:#94a3b8;">Exchange Stop-Loss:</span>
+                        <b style="color:#34d399;">✅ PLACED IN BOOK (#${d.sl_order_id})</b>
+                    </div>
+                ` : `
+                    <div style="margin:12px 0; background:rgba(239, 68, 68, 0.18); border:1px solid #ef4444; border-radius:10px; padding:12px; text-align:left;">
+                        <div style="color:#ef4444; font-weight:800; font-size:13px; margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                            <span>🚨</span> BROKER EXCHANGE SL NOT IN BOOK
+                        </div>
+                        <div style="color:#fca5a5; font-size:12px; line-height:1.4;">
+                            Broker note: <i>${d.sl_message || 'Exchange SL validation failed'}</i>.<br>
+                            🛡️ <b>Local ₹300 Guard is ACTIVE</b> &amp; will auto-exit if price hits SL.<br>
+                            📱 <b>ACTION:</b> You can also enter SL manually in Angel One App at <b style="color:#fff; text-decoration:underline;">₹${parseFloat(d.sl_price || sl).toFixed(2)}</b> for 100% safety!
+                        </div>
+                    </div>
+                `;
+
                 succCont.innerHTML = `
                     <div style="text-align:center; padding:10px 0;">
                         <div style="font-size:46px; margin-bottom:8px;">🎉</div>
@@ -3919,6 +4312,10 @@ async function executeModalOrder() {
                                 <b style="color:#fff;">${d.symbol || sym} <span class="badge ${d.action === 'BUY' ? 'badge-buy' : 'badge-sell'}">${d.action || action}</span></b>
                             </div>
                             <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                                <span style="color:#94a3b8;">Strategy:</span>
+                                <b style="color:#a78bfa;">${(d.scan_type || currentTradeScanType || 'ultra_sniper').toUpperCase().replace('_', ' ')}</b>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                                 <span style="color:#94a3b8;">Quantity:</span>
                                 <b style="color:#fff;">${d.qty || qty} Shares (₹300 Risk Sized)</b>
                             </div>
@@ -3926,12 +4323,7 @@ async function executeModalOrder() {
                                 <span style="color:#94a3b8;">Angel One Order ID:</span>
                                 <b style="color:#60a5fa; font-family:monospace;">${d.order_id || 'N/A'}</b>
                             </div>
-                            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-                                <span style="color:#94a3b8;">Exchange Stop-Loss:</span>
-                                <b style="color:${d.sl_placed ? '#34d399' : '#fbbf24'};">
-                                    ${d.sl_placed ? `✅ PLACED IN BOOK (#${d.sl_order_id})` : `🛡️ ACTIVE (Local SL Guard)`}
-                                </b>
-                            </div>
+                            ${slHtml}
                             <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                                 <span style="color:#94a3b8;">Stop Loss Price:</span>
                                 <b style="color:#f87171;">₹${parseFloat(d.sl_price || sl).toFixed(2)}</b>
@@ -3964,6 +4356,16 @@ async function executeModalOrder() {
                         1. Open <a href="https://smartapi.angelone.in/" target="_blank" style="color:#60a5fa; text-decoration:underline; font-weight:bold;">smartapi.angelone.in</a> &gt; My Apps<br>
                         2. Click Edit App &gt; <b>Allowed IP</b><br>
                         3. Add <b style="color:#fde047;">${curIp}</b> and click Save!
+                    </div>
+                `;
+            } else if (errMsg.toLowerCase().includes('cautionary') || errMsg.toLowerCase().includes('surveillance') || errMsg.toLowerCase().includes('ab1008')) {
+                alertBox.innerHTML = `
+                    <div style="text-align:left; line-height:1.5;">
+                        <b style="color:#f59e0b; font-size:13px;">⚠️ STOCK UNDER EXCHANGE CAUTIONARY LIST!</b><br>
+                        NSE / Angel One has categorized <b>${sym}</b> under Cautionary/GSM Surveillance.<br>
+                        Exchange rules block Intraday API orders for this stock.<br><br>
+                        <b>👉 Solution:</b><br>
+                        Please select another signal from Deep Scan (e.g. <b>INFY, HDFCBANK, SBIN, ITC</b>) which are non-cautionary and 100% active for 5X Intraday trading.
                     </div>
                 `;
             } else {
@@ -4161,7 +4563,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(get_strategy_config())
         elif path == "/api/run-weekly-audit":
             if DB_AVAILABLE:
-                from backend.database import SessionLocal
                 from backend.weekly_optimizer import run_weekly_quant_audit
                 db = SessionLocal()
                 try:
@@ -4210,6 +4611,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             m = query.get("mode", ["paper"])[0]
             if DB_AVAILABLE:
                 db = SessionLocal()
+                if m == "live":
+                    reconcile_live_trades_with_broker(db)
+                else:
+                    reconcile_paper_trades(db)
                 w = get_weekly_summary(db, m)
                 mn = get_monthly_summary(db, m)
                 db.close()
@@ -4277,6 +4682,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 t2  = body.get("target2") or body.get("t2") or 0
                 mode = body.get("mode") or config.get("trading_mode", "paper")
                 order_type = body.get("order_type", "MARKET")
+                scan_type = body.get("scan_type", "ultra_sniper")
 
                 res = execute_trade(
                     symbol=sym,
@@ -4288,7 +4694,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     t1=t1,
                     t2=t2,
                     mode=mode,
-                    order_type=order_type
+                    order_type=order_type,
+                    scan_type=scan_type
                 )
                 self._send_json(res)
             except Exception as e:

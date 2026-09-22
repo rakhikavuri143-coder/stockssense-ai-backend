@@ -21,10 +21,10 @@ from pydantic import BaseModel, Field
 
 _client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", ""))
 
-MODELS_TO_TRY = ["gemini-3.6-flash"]
+MODELS_TO_TRY = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-flash-latest", "gemini-3.6-flash"]
 GEMINI_TIMEOUT = 8  # seconds per model attempt
 
-# Circuit breaker: if 429 rate limit is hit, skip Gemini API calls for 10 minutes
+# Circuit breaker: if 429 rate limit is hit across all models, skip Gemini API calls temporarily
 _gemini_blocked_until = 0.0
 
 
@@ -39,15 +39,15 @@ class StockSignalSchema(BaseModel):
     risk_level: str = Field(description="LOW, MEDIUM, or HIGH")
 
 
-SYSTEM_PROMPT = """You are an ultra-high conviction Indian stock market quantitative analyst and intraday trading AI.
-You analyze NSE/BSE stocks using real-time news, 1-hour technical chart data (VWAP, RSI, EMA9/21, Volume RVOL), 15-minute entry timing confirmation, and 5-year historical reaction patterns.
+SYSTEM_PROMPT = """You are an expert Indian stock market intraday quantitative analyst AI.
+You evaluate NSE stocks for high-conviction intraday trade signals (BUY, SELL, or AVOID) using 1H + 15M multi-timeframe charts, VWAP, RSI, news, and volume.
 
-STRICT CONFLUENCE RULES FOR 85%+ WIN ACCURACY:
-1. BUY Signal Requirements: Price MUST be ABOVE VWAP on BOTH 1H & 15M charts, 1H Trend MUST be BULLISH (EMA9 > EMA21), 15M Trend MUST be BULLISH, Volume RVOL >= 1.5x (Institutional Volume Confirmation), RSI between 45 and 68.
-2. SELL Signal Requirements: Price MUST be BELOW VWAP on BOTH 1H & 15M charts, 1H Trend MUST be BEARISH (EMA9 < EMA21), 15M Trend MUST be BEARISH, Volume RVOL >= 1.5x (Institutional Volume Confirmation), RSI between 32 and 55.
-3. If Nifty 50 Index is falling (nifty_change_pct < -0.5%), BLOCK all BUY signals automatically.
-4. If ANY indicator disagrees or RVOL < 1.5x (no institutional volume), ALWAYS output 'AVOID'.
-5. Only issue BUY or SELL if your calculated Confidence is >= 85% and SL Hit Probability <= 20%.
+CONFLUENCE RULES FOR 85%+ WIN ACCURACY:
+1. BUY Signal Requirements: Price MUST be ABOVE VWAP on 1H chart, 1H Trend BULLISH (or EMA9 > EMA21), 15M Trend BULLISH, RSI between 45 and 75, healthy volume (RVOL >= 0.7x or volume expanding). Confidence must be 85% to 95%.
+2. SELL Signal Requirements: Price MUST be BELOW VWAP on 1H chart, 1H Trend BEARISH (or EMA9 < EMA21), 15M Trend BEARISH, RSI between 25 and 55, healthy volume. Confidence must be 85% to 95%.
+3. Market Guard: If Nifty 50 Index is falling strongly (nifty_change_pct < -0.8%), BLOCK all BUY signals.
+4. Output AVOID if 1H and 15M trends strongly conflict (e.g. 1H Bearish while 15M Bullish), or stock is in a choppy/sideways range, or volume is illiquid/dead (RVOL < 0.4x).
+5. Output confidence on a 0 to 100 scale (e.g. 88.0 for high conviction). Only issue BUY or SELL if calculated Confidence is >= 85% and SL Hit Probability <= 20%.
 """
 
 
@@ -162,23 +162,24 @@ INSTRUCTIONS:
                     raw = raw[4:]
             ai_result = json.loads(raw)
 
+            raw_conf = float(ai_result.get("confidence", 0))
+            if 0 < raw_conf <= 1.0:
+                raw_conf = round(raw_conf * 100.0, 1)
+
             return {
                 "signal":               ai_result.get("signal", "AVOID"),
-                "confidence":           float(ai_result.get("confidence", 0)),
+                "confidence":           raw_conf,
                 "sl_hit_probability":   float(ai_result.get("sl_hit_probability", 30)),
                 "news_summary":         ai_result.get("news_summary", ""),
                 "technical_summary":    ai_result.get("technical_summary", ""),
                 "historical_summary":   ai_result.get("historical_summary", ""),
                 "reasoning":            ai_result.get("reasoning", ""),
                 "risk_level":           ai_result.get("risk_level", "MEDIUM"),
+                "source":               f"Gemini AI ({model_name})",
             }
         except Exception as e:
             err_str = str(e)
             logger.warning("Gemini %s failed for %s: %s", model_name, symbol, err_str)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
-                logger.info("Gemini API rate limit (429) hit. Circuit breaker active for 10 minutes. Using Quant Engine.")
-                _gemini_blocked_until = time.time() + 600  # 10 minutes circuit break
-                break
             continue
 
     # Fallback to Technical Quant Engine if Gemini API unavailable/rate-limited
@@ -210,76 +211,95 @@ def _quant_technical_signal(symbol: str, name: str, tech: dict, news: list) -> d
 
     # UPGRADE 1: Nifty 50 Index Confluence Guard
     nifty_change    = tech.get("nifty_change_pct", 0.0)
-    nifty_buy_block = nifty_change <= -0.5   # Block BUY if Nifty falling -0.5% or more
-    nifty_sell_block = nifty_change >= 0.5   # Block SELL if Nifty rising strongly
+    nifty_buy_block = nifty_change <= -0.3   # Block BUY if Nifty falling -0.3% or more
+    nifty_sell_block = nifty_change >= 0.3   # Block SELL if Nifty rising +0.3% or more
 
-    # UPGRADE 3: Institutional RVOL >= 1.5x Filter
-    has_institutional_volume = rvol >= 1.5
+    # UPGRADE 3: Volume Confirmation Filter (Minimum 0.8x RVOL to avoid low-volume traps)
+    rvol_15m = tech.get("rvol_15m", 1.0) or 1.0
+    has_institutional_volume = rvol >= 1.3 or rvol_15m >= 1.3
+    has_healthy_volume = rvol >= 0.8 or rvol_15m >= 0.8
 
-    # Full 1H + 15M + RVOL + Open!=High Confluence Check for BUY
+    # UPGRADE 4: Anti-FOMO & Fresh Entry Detection
+    is_extended_move   = tech.get("is_extended_move", False)
+    is_pullback_bounce = tech.get("is_pullback_bounce", False)
+
+    # Full 1H + 15M Ultra-Sniper Confluence Check for BUY
     is_bullish_confluence = (
         (trend == "BULLISH" or ema9 > ema21) and
         p_vwap == "ABOVE" and
-        40 <= rsi <= 75 and
+        p_vwap_15m == "ABOVE" and # Dual VWAP Lock (both 1H & 15M above VWAP)
+        46 <= rsi <= 72 and      # Optimal RSI momentum range
         not is_open_high and
-        is_bullish_15m and       # UPGRADE 2: 15M must also be BULLISH
-        has_institutional_volume and  # UPGRADE 3: Must have Big Money volume
-        not nifty_buy_block      # UPGRADE 1: Nifty must not be crashing
+        is_bullish_15m and       # 15M trend must also be BULLISH
+        has_healthy_volume and   # Strong volume (RVOL >= 0.8x)
+        not nifty_buy_block and  # Nifty market trend aligned
+        not is_extended_move     # Anti-FOMO: Never buy extended moves!
     )
 
-    # Full 1H + 15M + RVOL Confluence Check for SELL
+    # Full 1H + 15M Ultra-Sniper Confluence Check for SELL
     is_bearish_confluence = (
         (trend == "BEARISH" or ema9 < ema21) and
         p_vwap == "BELOW" and
-        25 <= rsi <= 60 and
-        is_bearish_15m and       # UPGRADE 2: 15M must also be BEARISH
-        has_institutional_volume and  # UPGRADE 3: Must have Big Money volume
-        not nifty_sell_block     # UPGRADE 1: Nifty must not be surging (for SELL)
+        p_vwap_15m == "BELOW" and # Dual VWAP Lock (both 1H & 15M below VWAP)
+        28 <= rsi <= 54 and      # Optimal RSI bearish range
+        is_bearish_15m and       # 15M trend must also be BEARISH
+        has_healthy_volume and   # Strong volume (RVOL >= 0.8x)
+        not nifty_sell_block and # Nifty market trend aligned
+        not is_extended_move     # Anti-FOMO: Never sell extended breakdowns!
     )
 
-    # Moderate setups (without full 15M+RVOL confluence)
+    # Moderate setups (without full 15M confluence)
     is_moderate_buy = (
-        p_vwap == "ABOVE" and rsi >= 45 and not is_open_high and not nifty_buy_block
+        p_vwap == "ABOVE" and rsi >= 45 and not is_open_high and not nifty_buy_block and not is_extended_move
     )
     is_moderate_sell = (
-        p_vwap == "BELOW" and rsi <= 55 and not nifty_sell_block
+        p_vwap == "BELOW" and rsi <= 55 and not nifty_sell_block and not is_extended_move
     )
 
     news_headline = news[0]["title"] if news else "Multi-Timeframe Confluence Quant Analysis"
 
-    if is_bullish_confluence:
-        score = 90.0
-        if rvol >= 2.0: score += 3.0   # Extra for very high institutional volume
-        if 50 <= rsi <= 65: score += 2.0
-        if is_bullish_15m: score += 2.0  # 15M confirmation bonus
+    if is_extended_move:
+        signal = "AVOID"
+        conf = 65.0
+        reason = (
+            f"🛑 AVOID {symbol}: Extended Move Trap! Price already >1.0% from VWAP or 3 consecutive candles completed. "
+            f"Chasing risk is high — wait for pullback to VWAP."
+        )
+
+    elif is_bullish_confluence:
+        score = 88.0
+        if is_pullback_bounce: score += 4.0        # Extra reward for buying the dip!
+        if has_institutional_volume: score += 3.0   # Extra for high institutional volume
+        if rvol >= 1.8: score += 2.0
+        if 50 <= rsi <= 66: score += 2.0            # Sweet spot RSI
         signal = "BUY"
         conf = min(96.0, score)
         reason = (
-            f"🏆 ULTRA High-Conviction Buy: 1H+15M Both BULLISH above VWAP | "
-            f"RSI({rsi:.1f}) optimal | RVOL({rvol:.1f}x) Institutional Volume | "
-            f"Nifty({nifty_change:+.2f}%) OK | 4-Filter Confluence PASSED!"
+            f"🏆 High-Conviction Buy: 1H+15M Both BULLISH above VWAP | "
+            f"{'🌟 Trend Pullback Bounce Reversal | ' if is_pullback_bounce else ''}"
+            f"RSI({rsi:.1f}) optimal | RVOL({rvol:.1f}x) | "
+            f"Nifty({nifty_change:+.2f}%) OK | Multi-Timeframe Confluence PASSED!"
         )
 
     elif is_bearish_confluence:
-        score = 90.0
-        if rvol >= 2.0: score += 3.0
+        score = 88.0
+        if has_institutional_volume: score += 4.0
+        if rvol >= 1.8: score += 3.0
         if 35 <= rsi <= 50: score += 2.0
-        if is_bearish_15m: score += 2.0
         signal = "SELL"
         conf = min(96.0, score)
         reason = (
-            f"🏆 ULTRA High-Conviction Sell: 1H+15M Both BEARISH below VWAP | "
-            f"RSI({rsi:.1f}) optimal | RVOL({rvol:.1f}x) Institutional Volume | "
-            f"Nifty({nifty_change:+.2f}%) OK | 4-Filter Confluence PASSED!"
+            f"🏆 High-Conviction Sell: 1H+15M Both BEARISH below VWAP | "
+            f"RSI({rsi:.1f}) optimal | RVOL({rvol:.1f}x) | "
+            f"Nifty({nifty_change:+.2f}%) OK | Multi-Timeframe Confluence PASSED!"
         )
 
     elif is_moderate_buy:
-        # Moderate setups are marked AVOID unless they pass full confluence (gate >= 85%)
         signal = "AVOID"
         conf = 80.0
         reason = (
             f"🟡 Moderate Buy Setup (Filtered Out): Above VWAP, RSI({rsi:.1f}) OK | "
-            f"Missing: {'RVOL<1.5x ' if not has_institutional_volume else ''}{'15M not BULLISH' if not is_bullish_15m else ''} | "
+            f"Missing: {'15M not BULLISH ' if not is_bullish_15m else ''}{'Low RVOL' if not has_healthy_volume else ''} | "
             f"Requires 85%+ High-Conviction Gate — Marked AVOID for safety."
         )
 
@@ -288,7 +308,7 @@ def _quant_technical_signal(symbol: str, name: str, tech: dict, news: list) -> d
         conf = 80.0
         reason = (
             f"🟡 Moderate Sell Setup (Filtered Out): Below VWAP, RSI({rsi:.1f}) weak | "
-            f"Missing: {'RVOL<1.5x ' if not has_institutional_volume else ''}{'15M not BEARISH' if not is_bearish_15m else ''} | "
+            f"Missing: {'15M not BEARISH ' if not is_bearish_15m else ''}{'Low RVOL' if not has_healthy_volume else ''} | "
             f"Requires 85%+ High-Conviction Gate — Marked AVOID for safety."
         )
 

@@ -234,12 +234,219 @@ def get_smartapi_positions(auth_data: Dict) -> Optional[List[Dict]]:
             if data.get("status") is True:
                 return data.get("data", [])
             else:
+                msg = str(data.get("message") or "")
+                errcode = str(data.get("errorcode") or "")
+                # Auto-Relogin Interceptor for expired/invalid tokens
+                if "token" in msg.lower() or "session" in msg.lower() or "invalid" in msg.lower() or errcode in ("AG8001", "AB8050"):
+                    logger.warning("🔄 SmartAPI Token expired. Triggering silent auto-relogin...")
+                    c_code = auth_data.get("client_code") or os.getenv("ANGELONE_CLIENT_CODE", "")
+                    pwd = auth_data.get("password") or os.getenv("ANGELONE_PASSWORD", "")
+                    api_k = auth_data.get("api_key") or os.getenv("ANGELONE_API_KEY", "")
+                    totp_s = auth_data.get("totp_secret") or os.getenv("ANGELONE_TOTP_SECRET", "")
+                    if c_code and pwd and api_k and totp_s:
+                        new_sess, _ = login_smartapi(c_code, pwd, api_k, totp_s)
+                        if new_sess and new_sess.get("jwtToken"):
+                            auth_data["jwtToken"] = new_sess["jwtToken"]
+                            headers["Authorization"] = f"Bearer {new_sess['jwtToken']}"
+                            retry_resp = client.get(url, headers=headers)
+                            retry_data = _safe_json(retry_resp)
+                            if retry_data.get("status") is True:
+                                logger.info("✅ Auto-relogin succeeded! Fetched positions.")
+                                return retry_data.get("data", [])
                 if data.get("message"):
                     logger.warning("⚠️ Could not fetch positions: %s", data.get("message"))
                 return None
     except Exception as e:
         logger.warning("Note: Exception fetching positions: %s", e)
         return None
+
+
+def get_smartapi_candle_data(auth_data: Dict, symbol_token: str, interval: str = "ONE_HOUR", days: int = 5) -> Optional[List[List]]:
+    """
+    Fetch historical OHLCV candles directly from Angel One SmartAPI.
+    Eliminates Yahoo Finance 403 Forbidden errors.
+    Returns list of [timestamp, open, high, low, close, volume]
+    """
+    from datetime import datetime, timedelta, timezone
+    ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    from_dt = (ist_now - timedelta(days=days)).strftime("%Y-%m-%d 09:15")
+    to_dt = ist_now.strftime("%Y-%m-%d %H:%M")
+
+    url = f"{ANGELONE_URL}/rest/secure/angelbroking/historical/v1/getCandleData"
+    payload = {
+        "exchange": "NSE",
+        "symboltoken": str(symbol_token),
+        "interval": interval.upper(),
+        "fromdate": from_dt,
+        "todate": to_dt
+    }
+    headers = {
+        "Authorization": f"Bearer {auth_data['jwtToken']}",
+        "Content-Type": "application/json",
+        "X-PrivateKey": auth_data["api_key"],
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": get_server_public_ip(),
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
+    }
+
+    try:
+        with get_httpx_client(timeout=8.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            data = _safe_json(resp)
+            if data.get("status") is True and "data" in data and isinstance(data["data"], list):
+                return data["data"]
+            else:
+                logger.warning("⚠️ SmartAPI candle fetch returned non-success: %s", data.get("message"))
+                return None
+    except Exception as e:
+        logger.warning("⚠️ SmartAPI candle fetch exception for token %s: %s", symbol_token, e)
+        return None
+
+
+def get_smartapi_ltp(auth_data: Dict, symbol_token: str, tradingsymbol: str, exchange: str = "NSE") -> Optional[float]:
+    """
+    Fetch instant real-time Last Traded Price (LTP) directly from Angel One SmartAPI.
+    Zero-delay pricing (replaces delayed Yahoo Finance polling).
+    """
+    url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/getLtpData"
+    payload = {
+        "exchange": exchange.upper(),
+        "tradingsymbol": tradingsymbol.upper(),
+        "symboltoken": str(symbol_token)
+    }
+    headers = {
+        "Authorization": f"Bearer {auth_data['jwtToken']}",
+        "Content-Type": "application/json",
+        "X-PrivateKey": auth_data["api_key"],
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": get_server_public_ip(),
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
+    }
+
+    try:
+        with get_httpx_client(timeout=5.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            data = _safe_json(resp)
+            if data.get("status") is True and "data" in data:
+                return float(data["data"].get("ltp") or 0.0)
+            return None
+    except Exception as e:
+        logger.warning("⚠️ SmartAPI getLtpData exception for %s: %s", tradingsymbol, e)
+        return None
+
+
+def place_smartapi_sl_order_multistage(
+    auth_data: Dict,
+    symbol: str,
+    symbol_token: str,
+    action: str,
+    qty: int,
+    sl_price: float,
+    exchange: str = "NSE",
+    product: str = "INTRADAY"
+) -> Dict:
+    """
+    4-Stage Sequential Stop-Loss Order Placement in Angel One Order Book:
+    1. variety='STOPLOSS', ordertype='STOPLOSS_LIMIT'
+    2. variety='NORMAL',   ordertype='STOPLOSS_LIMIT'
+    3. variety='STOPLOSS', ordertype='STOPLOSS_MARKET'
+    4. variety='NORMAL',   ordertype='STOPLOSS_MARKET'
+    """
+    counter_action = "SELL" if action.upper() == "BUY" else "BUY"
+    clean_sym = symbol.upper().replace(".NS", "").replace(".BO", "").strip()
+    if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
+        clean_sym = f"{clean_sym}-EQ"
+
+    if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
+        tok, t_sym = get_angelone_token_and_symbol(clean_sym)
+        if tok:
+            symbol_token = tok
+            clean_sym = t_sym
+
+    raw_trigger = float(sl_price)
+    trigger_p = round(round(raw_trigger / 0.05) * 0.05, 2)
+    
+    if counter_action == "SELL":
+        raw_limit = trigger_p * 0.995
+        limit_p = min(trigger_p, round(round(raw_limit / 0.05) * 0.05, 2))
+    else:
+        raw_limit = trigger_p * 1.005
+        limit_p = max(trigger_p, round(round(raw_limit / 0.05) * 0.05, 2))
+
+    url = f"{ANGELONE_URL}/rest/secure/angelbroking/order/v1/placeOrder"
+    headers = {
+        "Authorization": f"Bearer {auth_data['jwtToken']}",
+        "Content-Type": "application/json",
+        "X-PrivateKey": auth_data["api_key"],
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "127.0.0.1",
+        "X-ClientPublicIP": get_server_public_ip(),
+        "X-MACaddress": "fe-80-00-00-00-00",
+        "MACAddress": "fe-80-00-00-00-00"
+    }
+
+    last_res = {}
+    with get_httpx_client(timeout=6.0) as client:
+        for variety_type in ["STOPLOSS", "NORMAL"]:
+            for order_t in ["STOPLOSS_LIMIT", "STOPLOSS_MARKET"]:
+                payload = {
+                    "variety": variety_type,
+                    "tradingsymbol": clean_sym,
+                    "symboltoken": str(symbol_token),
+                    "transactiontype": counter_action,
+                    "exchange": exchange.upper(),
+                    "ordertype": order_t,
+                    "producttype": product.upper(),
+                    "duration": "DAY",
+                    "price": str(limit_p) if order_t == "STOPLOSS_LIMIT" else "0",
+                    "triggerprice": str(trigger_p),
+                    "quantity": str(max(1, int(qty))),
+                    "squareoff": "0.00",
+                    "stoploss": "0.00"
+                }
+                try:
+                    resp = client.post(url, json=payload, headers=headers)
+                    data = _safe_json(resp)
+                    last_res = data
+                    
+                    # Intercept expired session
+                    if data.get("status") is not True:
+                        err_str = str(data.get("message", "")).lower()
+                        if any(w in err_str for w in ("token", "jwt", "session", "unauthorized", "ag8001", "ab8050")):
+                            logger.info("🔄 [Auto-Relogin] Token expired during SL placement, refreshing session...")
+                            fresh_auth = login_angelone()
+                            if fresh_auth:
+                                auth_data.update(fresh_auth)
+                                headers["Authorization"] = f"Bearer {auth_data['jwtToken']}"
+                                resp = client.post(url, json=payload, headers=headers)
+                                data = _safe_json(resp)
+                                last_res = data
+
+                    if data.get("status") is True and "data" in data:
+                        oid = data["data"].get("uniqueorderid") or data["data"].get("orderid")
+                        logger.info("🛡️ SmartAPI SL placed: %s (Variety: %s, Type: %s) @ Trg: %s", oid, variety_type, order_t, trigger_p)
+                        return {
+                            "success": True,
+                            "sl_order_id": oid,
+                            "trigger_price": trigger_p,
+                            "limit_price": limit_p if order_t == "STOPLOSS_LIMIT" else trigger_p,
+                            "variety": variety_type,
+                            "order_type": order_t,
+                            "message": f"Exchange SL Order Placed: {oid}"
+                        }
+                except Exception as ex:
+                    last_res = {"message": str(ex)}
+
+    err = last_res.get("message", "Exchange rejected SL in all 4 stages")
+    logger.error("❌ Multi-stage SL placement failed for %s: %s", clean_sym, err)
+    return {"success": False, "message": err}
 
 
 def get_smartapi_rms(auth_data: Dict) -> Optional[Dict]:

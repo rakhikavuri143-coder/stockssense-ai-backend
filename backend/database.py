@@ -233,10 +233,10 @@ def get_weekly_summary(db: Session, mode: str = "paper"):
     result = db.execute(text(f"""
         SELECT
             COUNT(*) as total_trades,
-            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
-            COALESCE(SUM(pnl), 0) as net_pnl,
-            COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
+            COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) as wins,
+            COALESCE(SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END), 0) as losses,
+            ROUND(COALESCE(SUM(pnl), 0), 2) as net_pnl,
+            ROUND(COALESCE(AVG(pnl_percent), 0), 2) as avg_pnl_pct
         FROM {table_name}
         WHERE trade_date >= {date_filter}
     """)).fetchone()
@@ -255,10 +255,10 @@ def get_monthly_summary(db: Session, mode: str = "paper"):
     result = db.execute(text(f"""
         SELECT
             COUNT(*) as total_trades,
-            SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
-            SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) as losses,
-            COALESCE(SUM(pnl), 0) as net_pnl,
-            COALESCE(AVG(pnl_percent), 0) as avg_pnl_pct
+            COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) as wins,
+            COALESCE(SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END), 0) as losses,
+            ROUND(COALESCE(SUM(pnl), 0), 2) as net_pnl,
+            ROUND(COALESCE(AVG(pnl_percent), 0), 2) as avg_pnl_pct
         FROM {table_name}
         WHERE trade_date >= {date_filter}
     """)).fetchone()

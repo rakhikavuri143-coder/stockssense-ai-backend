@@ -541,17 +541,26 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                 peak_pnl_val = current_pnl_buy
 
             price_drop = peak - price
-            pullback_allowed = max(30.0, peak_pnl_val * 0.20)
-            min_price_buffer = max(0.20, entry_p * 0.002)
+            # ══ FILTER 2: DYNAMIC TRAILING PROFIT LOCK (₹30 Sniper vs ₹50 Deep Scan) ══
+            min_price_buffer = max(0.10, entry_p * 0.001)
+            is_trailing_exit = False
+            trailing_reason = ""
 
-            if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl_buy) >= pullback_allowed and current_pnl_buy > 0 and price_drop >= min_price_buffer:
-                res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+            if peak_pnl_val >= 150.0 and ((peak_pnl_val - current_pnl_buy) >= 50.0 or current_pnl_buy <= 25.0) and current_pnl_buy > 0 and price_drop >= min_price_buffer:
+                is_trailing_exit = True
+                trailing_reason = f"SWING_TRAILING_50_LOCK (Peak: +₹{peak_pnl_val:.2f} ➔ Retraced ₹{(peak_pnl_val - current_pnl_buy):.2f} to +₹{current_pnl_buy:.2f})"
+            elif peak_pnl_val >= 100.0 and ((peak_pnl_val - current_pnl_buy) >= 30.0 or current_pnl_buy <= 10.0) and current_pnl_buy > 0 and price_drop >= min_price_buffer:
+                is_trailing_exit = True
+                trailing_reason = f"SNIPER_PROFIT_30_LOCK (Peak: +₹{peak_pnl_val:.2f} ➔ Retraced ₹{(peak_pnl_val - current_pnl_buy):.2f} to +₹{current_pnl_buy:.2f})"
+
+            if is_trailing_exit:
+                res = close_paper_position(db, symbol, price, exit_reason=trailing_reason)
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
                 _paper_reversal_notified.discard(trade_id)
                 _paper_last_reversal_check_ts.pop(trade_id, None)
-                logger.info("💰 Dynamic 20% Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl_buy, current_pnl_buy)
+                logger.info("💰 Paper BUY %s: %s (Locked +₹%.2f)", trailing_reason, symbol, current_pnl_buy)
                 continue
 
             # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
@@ -660,25 +669,32 @@ def check_auto_exits(db: Session, live_prices: dict[str, float]):
                         logger.info("❌ Nifty Max Loss Hit (-₹100) for %s! P&L: ₹%.2f (Trade Value: ₹%.2f)", symbol, current_pnl_sell, trade_value)
                         continue
 
-            # ══ FILTER 2: TRAILING PEAK PROFIT LOCK (+₹120 PEAK, ₹30 TRAIL PULLBACK) ══
-            # Rule: "Green trade ni eppatiki Red avvanivvakoodadhu!"
+            # ══ FILTER 2: DYNAMIC TRAILING PROFIT LOCK (₹30 Sniper vs ₹50 Deep Scan) ══
             peak_pnl_val = _peak_pnl.get(trade_id, 0.0)
             if current_pnl_sell > peak_pnl_val:
                 _peak_pnl[trade_id] = current_pnl_sell
                 peak_pnl_val = current_pnl_sell
 
             price_drop = price - peak
-            pullback_allowed = max(30.0, peak_pnl_val * 0.20)
-            min_price_buffer = max(0.20, entry_p * 0.002)
+            min_price_buffer = max(0.10, entry_p * 0.001)
+            is_trailing_exit = False
+            trailing_reason = ""
 
-            if peak_pnl_val >= 120.0 and (peak_pnl_val - current_pnl_sell) >= pullback_allowed and current_pnl_sell > 0 and price_drop >= min_price_buffer:
-                res = close_paper_position(db, symbol, price, exit_reason="DYNAMIC_PROFIT_LOCK")
+            if peak_pnl_val >= 150.0 and ((peak_pnl_val - current_pnl_sell) >= 50.0 or current_pnl_sell <= 25.0) and current_pnl_sell > 0 and price_drop >= min_price_buffer:
+                is_trailing_exit = True
+                trailing_reason = f"SWING_TRAILING_50_LOCK (Peak: +₹{peak_pnl_val:.2f} ➔ Retraced ₹{(peak_pnl_val - current_pnl_sell):.2f} to +₹{current_pnl_sell:.2f})"
+            elif peak_pnl_val >= 100.0 and ((peak_pnl_val - current_pnl_sell) >= 30.0 or current_pnl_sell <= 10.0) and current_pnl_sell > 0 and price_drop >= min_price_buffer:
+                is_trailing_exit = True
+                trailing_reason = f"SNIPER_PROFIT_30_LOCK (Peak: +₹{peak_pnl_val:.2f} ➔ Retraced ₹{(peak_pnl_val - current_pnl_sell):.2f} to +₹{current_pnl_sell:.2f})"
+
+            if is_trailing_exit:
+                res = close_paper_position(db, symbol, price, exit_reason=trailing_reason)
                 results.append(res)
                 _peak_prices.pop(trade_id, None)
                 _peak_pnl.pop(trade_id, None)
                 _paper_reversal_notified.discard(trade_id)
                 _paper_last_reversal_check_ts.pop(trade_id, None)
-                logger.info("💰 Dynamic 20% Peak Profit Lock: %s Peaked at +₹%.2f, Dropped to +₹%.2f (Locked +₹%.2f)", symbol, peak_pnl_val, current_pnl_sell, current_pnl_sell)
+                logger.info("💰 Paper SELL %s: %s (Locked +₹%.2f)", trailing_reason, symbol, current_pnl_sell)
                 continue
 
             # ══ FILTER 3: 5-MINUTE TECHNICAL REVERSAL DETECTOR (Telegram Alert Only) ══
