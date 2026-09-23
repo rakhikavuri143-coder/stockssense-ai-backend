@@ -141,6 +141,16 @@ def login_smartapi(client_code: str, password: str, api_key: str, totp_secret: s
     return None, last_err
 
 
+def login_angelone() -> Optional[Dict]:
+    """Helper to login or refresh Angel One session using active environment or local_config.json."""
+    try:
+        from backend import live_trading
+        return live_trading.get_live_auth_data(force_refresh=True)
+    except Exception as e:
+        logger.error("login_angelone exception: %s", e)
+        return None
+
+
 def place_smartapi_order(
     auth_data: Dict,
     symbol: str,
