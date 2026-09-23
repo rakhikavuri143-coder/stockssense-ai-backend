@@ -176,7 +176,7 @@ def place_smartapi_order(
         "ordertype": order_type.upper(),
         "producttype": product_type.upper(),
         "duration": "DAY",
-        "price": str(round(price, 2)) if order_type.upper() == "LIMIT" else "0",
+        "price": f"{float(price):.2f}" if order_type.upper() == "LIMIT" else "0",
         "quantity": str(quantity),
         "squareoff": "0.00",
         "stoploss": "0.00"
@@ -415,8 +415,8 @@ def place_smartapi_sl_order_multistage(
                     "ordertype": order_t,
                     "producttype": product.upper(),
                     "duration": "DAY",
-                    "price": str(limit_p) if order_t == "STOPLOSS_LIMIT" else "0",
-                    "triggerprice": str(trigger_p),
+                    "price": f"{float(limit_p):.2f}" if order_t == "STOPLOSS_LIMIT" else "0",
+                    "triggerprice": f"{float(trigger_p):.2f}",
                     "quantity": str(max(1, int(qty))),
                     "squareoff": "0.00",
                     "stoploss": "0.00"

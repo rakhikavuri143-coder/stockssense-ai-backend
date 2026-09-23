@@ -1245,7 +1245,7 @@ def place_order(symbol, symbol_token, action, qty, price=0, exchange="NSE", orde
         "ordertype": actual_order_type,
         "producttype": product.upper(),
         "duration": "DAY",
-        "price": str(round(order_p, 2)) if actual_order_type == "LIMIT" else "0",
+        "price": f"{float(order_p):.2f}" if actual_order_type == "LIMIT" else "0",
         "quantity": str(max(1, int(qty))),
         "squareoff": "0.00",
         "stoploss": "0.00"
@@ -1339,8 +1339,8 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
                 "ordertype": order_t,
                 "producttype": product.upper(),
                 "duration": "DAY",
-                "price": str(limit_p) if order_t == "STOPLOSS_LIMIT" else "0",
-                "triggerprice": str(trigger_p),
+                "price": f"{float(limit_p):.2f}" if order_t == "STOPLOSS_LIMIT" else "0",
+                "triggerprice": f"{float(trigger_p):.2f}",
                 "quantity": str(max(1, int(qty))),
                 "squareoff": "0.00",
                 "stoploss": "0.00"
