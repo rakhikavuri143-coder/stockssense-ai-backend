@@ -125,14 +125,14 @@ def _deep_ai_scan_single(stock: dict) -> Optional[dict]:
             historical = {"historical_note": "No historical pattern found."}
 
         # Step 5: Gemini AI Signal (with Quant fallback if rate-limited)
-        ai = analyze_stock_with_ai(symbol, name, sector, news_items, technical, historical, confidence_threshold=85.0)
+        ai = analyze_stock_with_ai(symbol, name, sector, news_items, technical, historical, confidence_threshold=90.0)
         if not ai:
             return None
 
         signal = (ai.get("signal") or "AVOID").upper()
         conf   = float(ai.get("confidence", 0))
-        if signal not in ("BUY", "SELL") or conf < 85.0:
-            return None   # Strict 85%+ High Conviction Filter
+        if signal not in ("BUY", "SELL") or conf < 90.0:
+            return None   # Strict 90%+ High Conviction Filter
 
         isBuy = signal == "BUY"
         sl     = technical.get("sl_buy" if isBuy else "sl_sell", round(price * (0.988 if isBuy else 1.012), 2))
@@ -911,31 +911,58 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             except Exception as e:
                 print(f"⚠️ Live trade DB save error: {e}")
 
-            # 🛡️ Instant Exchange Stop-Loss Order Placement in Angel One Order Book
-            sl_res = {}
-            if sl_val > 0:
-                try:
-                    sl_res = place_smartapi_sl_order(clean_sym, symbol_token, action, q, sl_val)
-                except Exception as e:
-                    print(f"⚠️ SL order placement exception: {e}")
-                    sl_res = {"success": False, "message": str(e)}
-
+            # 🛡️ 1. Register Local Trade Guard Immediately (Active during 60s settle window)
             try:
                 register_local_trade_guard(clean_sym, symbol_token, action, q, p, sl_val, t1_val, t2_val, scan_type=scan_type)
-                if sl_res.get("sl_order_id") and clean_sym in LOCAL_SL_TRACKER:
-                    LOCAL_SL_TRACKER[clean_sym]["sl_order_id"] = sl_res["sl_order_id"]
             except Exception as e:
                 print(f"⚠️ Register guard error: {e}")
 
-            sl_placed = sl_res.get("success", False)
-            sl_oid = sl_res.get("sl_order_id")
-            sl_err = sl_res.get("message", "Broker rejected SL order") if not sl_placed else ""
-            if sl_placed:
-                sl_note = f"\n🛡️ <b>Exchange SL Order:</b> PLACED (ID: {sl_oid} @ ₹{sl_val:.2f})"
-                sl_summary = f"Exchange SL Placed (#{sl_oid})"
-            else:
-                sl_note = f"\n⚠️ <b>Exchange SL:</b> {sl_err} (Local SL Guard Monitor is ACTIVE in background!)"
-                sl_summary = f"Local SL Guard Active ({sl_err})"
+            # ⏳ 2. 60-Second Delayed Broker Stop-Loss Worker (Prevents instant Angel One rejection)
+            def _delayed_sl_worker(target_sym, target_tok, target_act, target_qty, target_sl):
+                print(f"⏳ [60s Settle Engine] Waiting 60 seconds before submitting broker SL for {target_sym}...")
+                time.sleep(60)
+                try:
+                    # Check if position is still open in broker
+                    p_data = get_live_positions()
+                    matching = [x for x in p_data.get("positions", []) if int(x.get("netqty") or 0) != 0 and target_sym.replace("-EQ", "") in x.get("tradingsymbol", "")]
+                    if not matching:
+                        print(f"ℹ️ [60s Settle Engine] Position {target_sym} already closed or not found. Skipping SL.")
+                        return
+
+                    sl_result = place_smartapi_sl_order(target_sym, target_tok, target_act, target_qty, target_sl)
+                    if sl_result.get("success"):
+                        placed_oid = sl_result.get("sl_order_id")
+                        if target_sym in LOCAL_SL_TRACKER:
+                            LOCAL_SL_TRACKER[target_sym]["sl_order_id"] = placed_oid
+                        print(f"🛡️ [60s Settle Engine] Exchange SL successfully placed for {target_sym}: #{placed_oid} @ ₹{target_sl:.2f}")
+                        send_telegram_message(
+                            f"🛡️ <b>BROKER STOP-LOSS PLACED (60s Settle Delay)</b>\n\n"
+                            f"• <b>Symbol:</b> {target_sym}\n"
+                            f"• <b>SL Order ID:</b> <code>#{placed_oid}</code>\n"
+                            f"• <b>Trigger Price:</b> ₹{target_sl:.2f}\n"
+                            f"• <b>Qty:</b> {target_qty}\n"
+                            f"• <b>Status:</b> ✅ Placed in Angel One Order Book!"
+                        )
+                    else:
+                        fail_msg = sl_result.get("message", "Unknown error")
+                        print(f"⚠️ [60s Settle Engine] Broker SL placement note: {fail_msg}")
+                        send_telegram_message(
+                            f"⚠️ <b>BROKER SL PLACEMENT NOTE for {target_sym}</b>\n\n"
+                            f"• <b>Broker Msg:</b> {fail_msg}\n"
+                            f"• <b>Local SL Guard:</b> ACTIVE in background! (₹300 Net Loss Cap is actively monitoring)"
+                        )
+                except Exception as dex:
+                    print(f"⚠️ [60s Settle Engine] Exception: {dex}")
+
+            if sl_val > 0:
+                threading.Thread(
+                    target=_delayed_sl_worker,
+                    args=(clean_sym, symbol_token, action, q, sl_val),
+                    daemon=True
+                ).start()
+
+            sl_note = f"\n⏳ <b>Exchange SL Order:</b> Scheduled to place in 60s (Settle Delay buffer to prevent broker rejection)"
+            sl_summary = "Exchange SL scheduled in 60s (Local Guard active)"
 
             tg_msg = (
                 f"💼 <b>LIVE ORDER EXECUTED (ANGEL ONE)</b>\n"
@@ -951,9 +978,10 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
             )
             send_telegram_message(tg_msg)
 
-            res["sl_order_id"] = sl_oid
-            res["sl_placed"] = sl_placed
-            res["sl_message"] = sl_err
+            res["sl_order_id"] = "SCHEDULED_60S"
+            res["sl_placed"] = False
+            res["sl_scheduled"] = True
+            res["sl_message"] = "Exchange SL will be submitted in 60 seconds (settlement buffer)."
             res["sl_summary"] = sl_summary
             res["symbol"] = clean_sym
             res["action"] = action.upper()
@@ -1424,7 +1452,7 @@ SCRIP_TOKEN_CACHE = {}
 LOCAL_SL_TRACKER = {}  # {clean_sym: {symbol, symbol_token, action, qty, entry_price, stop_loss, target1, target2}}
 POSITION_FIRST_SEEN = {}  # {sym: timestamp_when_first_detected_as_open}
 SL_AUTO_PLACED = {}      # {sym: True}  tracks if we already auto-placed exchange SL for this position
-SL_AUTO_DELAY_SECS = 180  # 3 minutes after detecting open position → auto-place exchange SL
+SL_AUTO_DELAY_SECS = 60  # 60 seconds after detecting open position → auto-place exchange SL
 
 
 def register_local_trade_guard(symbol: str, symbol_token: str, action: str, qty: int, entry_price: float, stop_loss: float = 0, target1: float = 0, target2: float = 0, scan_type: str = "ultra_sniper"):
@@ -1666,7 +1694,7 @@ def _local_sl_monitor_thread():
             for sym in list(open_positions.keys()):
                 if sym not in POSITION_FIRST_SEEN:
                     POSITION_FIRST_SEEN[sym] = now_ts
-                    print(f"🕐 New open position detected: {sym}. Auto-SL will be placed in {SL_AUTO_DELAY_SECS//60} mins if not already present.")
+                    print(f"🕐 New open position detected: {sym}. Auto-SL will be placed in {SL_AUTO_DELAY_SECS}s if not already present.")
 
             # Check positions that have waited >= SL_AUTO_DELAY_SECS
             for sym, first_seen_ts in list(POSITION_FIRST_SEEN.items()):
@@ -4056,7 +4084,7 @@ function renderSignals(sigs, deepMode) {
         const tok = s.token || s.symboltoken || '';
         const target = parseFloat(s.target || (isBuy ? (price*1.02) : (price*0.98))).toFixed(1);
         const sl = parseFloat(s.stoploss || (isBuy ? (price*0.99) : (price*1.01))).toFixed(1);
-        const conf = s.confidence ? `${s.confidence}%` : '88%';
+        const conf = s.confidence ? `${s.confidence}%` : (deepMode ? '90%' : '88%');
 
         // 📐 Strict ₹300 Max Risk Position Sizing: Qty = int(300 / |Price - SL|)
         const lossPerShare = Math.abs(price - parseFloat(sl)) || (price * 0.01) || 1.0;
@@ -4287,6 +4315,16 @@ async function executeModalOrder() {
                         <span style="color:#94a3b8;">Exchange Stop-Loss:</span>
                         <b style="color:#34d399;">✅ PLACED IN BOOK (#${d.sl_order_id})</b>
                     </div>
+                ` : (d.sl_scheduled ? `
+                    <div style="margin:12px 0; background:rgba(59, 130, 246, 0.18); border:1px solid #3b82f6; border-radius:10px; padding:12px; text-align:left;">
+                        <div style="color:#60a5fa; font-weight:800; font-size:13px; margin-bottom:4px; display:flex; align-items:center; gap:6px;">
+                            <span>⏳</span> BROKER SL: SCHEDULED IN 60 SECONDS
+                        </div>
+                        <div style="color:#93c5fd; font-size:12px; line-height:1.4;">
+                            • <b>Exchange Settle Delay:</b> Broker SL order will be placed at <b>₹${parseFloat(d.sl_price || sl).toFixed(2)}</b> after 60s (prevents broker instant-rejection).<br>
+                            • 🛡️ <b>Local Guard Monitor:</b> ACTIVE right now in background! You will receive a Telegram confirmation when placed.
+                        </div>
+                    </div>
                 ` : `
                     <div style="margin:12px 0; background:rgba(239, 68, 68, 0.18); border:1px solid #ef4444; border-radius:10px; padding:12px; text-align:left;">
                         <div style="color:#ef4444; font-weight:800; font-size:13px; margin-bottom:4px; display:flex; align-items:center; gap:6px;">
@@ -4298,7 +4336,7 @@ async function executeModalOrder() {
                             📱 <b>ACTION:</b> You can also enter SL manually in Angel One App at <b style="color:#fff; text-decoration:underline;">₹${parseFloat(d.sl_price || sl).toFixed(2)}</b> for 100% safety!
                         </div>
                     </div>
-                `;
+                `);
 
                 succCont.innerHTML = `
                     <div style="text-align:center; padding:10px 0;">

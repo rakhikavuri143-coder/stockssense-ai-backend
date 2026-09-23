@@ -60,10 +60,9 @@ def get_live_auth_data(return_error: bool = False, force_refresh: bool = False):
             except Exception:
                 pass
 
-        client_code = client_code or "AACL535586"
-        password    = password or "7658"
-        api_key     = api_key or "GCmlQsKh"
-        totp_secret = totp_secret or "EAJXLMJEO5ASGPKQSUIH3I7YYE"
+    if not (client_code and password and api_key and totp_secret):
+        _last_auth_error = "Angel One credentials not configured on Cloud. Please use Local Trader (http://localhost:8888) for live execution."
+        return (None, _last_auth_error) if return_error else None
 
     try:
         session, err = login_smartapi(client_code, password, api_key, totp_secret)
@@ -199,28 +198,53 @@ def place_live_order(
 
     order_id = order_res.get("order_id")
 
-    # 6.5. 🛡️ Guaranteed Multistage Stop-Loss Placement in Angel One Order Book
-    sl_res = {}
-    if stop_loss > 0 and token:
+    # 6.5. 🛡️ 60-Second Delayed Broker Stop-Loss Worker (Prevents instant Angel One rejection)
+    def _delayed_live_sl_worker(auth, sym, tok, act, q, sl_p):
+        import time
+        logger.info("⏳ [60s Settle Engine] Waiting 60 seconds before submitting broker SL for %s...", sym)
+        time.sleep(60)
         try:
             from backend.broker_angelone import place_smartapi_sl_order_multistage
-            sl_res = place_smartapi_sl_order_multistage(
-                auth_data=auth_data,
-                symbol=trading_symbol,
-                symbol_token=token,
-                action=action,
-                qty=quantity,
-                sl_price=stop_loss,
+            from backend.telegram_alerts import send_telegram_message
+            sl_result = place_smartapi_sl_order_multistage(
+                auth_data=auth,
+                symbol=sym,
+                symbol_token=tok,
+                action=act,
+                qty=q,
+                sl_price=sl_p,
                 exchange="NSE",
                 product="INTRADAY"
             )
-            if sl_res.get("success"):
-                logger.info("✅ Broker Stop-Loss placed for %s: ID %s @ ₹%.2f", trading_symbol, sl_res.get("sl_order_id"), stop_loss)
+            if sl_result.get("success"):
+                placed_oid = sl_result.get("sl_order_id")
+                logger.info("🛡️ [60s Settle Engine] Broker Stop-Loss placed for %s: ID %s @ ₹%.2f", sym, placed_oid, sl_p)
+                send_telegram_message(
+                    f"🛡️ <b>BROKER STOP-LOSS PLACED (60s Settle Delay)</b>\n\n"
+                    f"• <b>Symbol:</b> {sym}\n"
+                    f"• <b>SL Order ID:</b> <code>#{placed_oid}</code>\n"
+                    f"• <b>Trigger Price:</b> ₹{sl_p:.2f}\n"
+                    f"• <b>Qty:</b> {q}\n"
+                    f"• <b>Status:</b> ✅ Placed in Angel One Order Book!"
+                )
             else:
-                logger.warning("⚠️ Broker Stop-Loss placement failed for %s: %s", trading_symbol, sl_res.get("message"))
+                fail_msg = sl_result.get("message", "Unknown error")
+                logger.warning("⚠️ [60s Settle Engine] Broker Stop-Loss placement failed for %s: %s", sym, fail_msg)
+                send_telegram_message(
+                    f"⚠️ <b>BROKER SL PLACEMENT NOTE for {sym}</b>\n\n"
+                    f"• <b>Broker Msg:</b> {fail_msg}\n"
+                    f"• <b>Note:</b> Position is still monitored by backend auto-exits."
+                )
         except Exception as sle:
-            logger.warning("SL order exception for %s: %s", trading_symbol, sle)
-            sl_res = {"success": False, "message": str(sle)}
+            logger.warning("SL order exception for %s: %s", sym, sle)
+
+    if stop_loss > 0 and token:
+        import threading
+        threading.Thread(
+            target=_delayed_live_sl_worker,
+            args=(auth_data, trading_symbol, token, action, quantity, stop_loss),
+            daemon=True
+        ).start()
 
     # 7. Save live trade in database
     trade_data = {
@@ -253,15 +277,15 @@ def place_live_order(
     except Exception as e:
         logger.warning("Telegram live open alert failed: %s", e)
 
-    sl_ok = sl_res.get("success", False)
     return {
-        "success":     True,
-        "message":     f"🟢 Live {action} order placed: {quantity} x {symbol} @ ₹{entry_price:.2f}" + (f" | SL placed #{sl_res.get('sl_order_id')}" if sl_ok else f" | SL warning: {sl_res.get('message', 'Not placed')}"),
-        "trade_id":    db_trade.id,
-        "order_id":    order_id,
-        "sl_placed":   sl_ok,
-        "sl_order_id": sl_res.get("sl_order_id"),
-        "sl_message":  sl_res.get("message", "")
+        "success":      True,
+        "message":      f"🟢 Live {action} order placed: {quantity} x {symbol} @ ₹{entry_price:.2f} | SL scheduled in 60s",
+        "trade_id":     db_trade.id,
+        "order_id":     order_id,
+        "sl_placed":    False,
+        "sl_scheduled": True,
+        "sl_order_id":  "SCHEDULED_60S",
+        "sl_message":   "Exchange SL will be submitted in 60 seconds (settlement buffer)."
     }
 
 
