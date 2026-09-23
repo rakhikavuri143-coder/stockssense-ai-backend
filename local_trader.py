@@ -864,9 +864,10 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
     if (t2_val <= 0) and p > 0:
         t2_val = round(p * (1.030 if action.upper() == "BUY" else 0.970), 2)
     
-    # 📐 Dynamic Net ₹300 Position Sizing (Gross Stock Risk ₹230 + Taxes/Brokerage ~₹60 = Net ₹290 Cap)
+    # 📐 Dynamic Position Sizing: Respect user's explicit manual quantity; fallback to auto ₹300 risk sizing
     calc_qty = calculate_position_size(p, sl_val, 230.0)
-    q = min(int(qty), calc_qty) if (qty and int(qty) > 0) else calc_qty
+    user_qty = int(qty) if (qty and int(qty) > 0) else 0
+    q = user_qty if user_qty > 0 else calc_qty
     q = max(1, q)
     import time
 
@@ -4355,7 +4356,7 @@ async function executeModalOrder() {
                             </div>
                             <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                                 <span style="color:#94a3b8;">Quantity:</span>
-                                <b style="color:#fff;">${d.qty || qty} Shares (₹300 Risk Sized)</b>
+                                <b style="color:#fff;">${d.qty || qty} Shares</b>
                             </div>
                             <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                                 <span style="color:#94a3b8;">Angel One Order ID:</span>
