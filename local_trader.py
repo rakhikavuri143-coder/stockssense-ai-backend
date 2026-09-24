@@ -75,20 +75,20 @@ ANGEL_TOKENS_MAP = {
     "ADANIENT.NS": "25",    "ADANIPORTS.NS": "15083", "LT.NS": "11483",
     "HCLTECH.NS": "7229",   "WIPRO.NS": "3787", "MARUTI.NS": "10999",
     "KOTAKBANK.NS": "1922", "TITAN.NS": "3506", "JSWSTEEL.NS": "11723",
-    "HINDUNILVR.NS": "356", "ITC.NS": "1660",   "ULTRACEMCO.NS": "11532",
-    "TECHM.NS": "13538",    "LTIM.NS": "17818", "GRASIM.NS": "315",
+    "HINDUNILVR.NS": "1394", "ITC.NS": "1660",   "ULTRACEMCO.NS": "11532",
+    "TECHM.NS": "13538",    "LTIM.NS": "17818", "GRASIM.NS": "1232",
     "CIPLA.NS": "694",      "DRREDDY.NS": "881", "DIVISLAB.NS": "10940",
-    "APOLLOHOSP.NS": "157", "BAJAJ-AUTO.NS": "16675", "EICHERMOT.NS": "910",
+    "APOLLOHOSP.NS": "157", "BAJAJ-AUTO.NS": "16669", "EICHERMOT.NS": "910",
     "INDUSINDBK.NS": "5258","HEROMOTOCO.NS": "1348", "NESTLEIND.NS": "17963",
     "SHRIRAMFIN.NS": "4306","SBILIFE.NS": "21808", "BPCL.NS": "526",
     "TATACONSUM.NS": "3432","HDFCLIFE.NS": "467",
     "SUZLON.NS": "12018",   "IDFCFIRSTB.NS": "11184", "PNB.NS": "10666",
     "YESBANK.NS": "11915",  "IRFC.NS": "2029",  "NHPC.NS": "17400",
-    "SAIL.NS": "2963",      "IOC.NS": "1624",   "UCOBANK.NS": "8064",
-    "UNIONBANK.NS": "10780","NBCC.NS": "14730", "SJVN.NS": "18883",
-    "HFCL.NS": "2303",      "ETERNAL.NS": "5097", "IDBI.NS": "10531",
-    "GMRAIRPORT.NS": "4328","FEDERALBNK.NS": "1023", "IDEA.NS": "14366",
-    "ZOMATO.NS": "5097",    "BANKBARODA.NS": "467", "HUDCO.NS": "14732",
+    "SAIL.NS": "2963",      "IOC.NS": "1624",   "UCOBANK.NS": "11223",
+    "UNIONBANK.NS": "10753","NBCC.NS": "31415", "SJVN.NS": "18883",
+    "HFCL.NS": "21954",     "ETERNAL.NS": "5097", "IDBI.NS": "1476",
+    "GMRAIRPORT.NS": "13528","FEDERALBNK.NS": "1023", "IDEA.NS": "14366",
+    "ZOMATO.NS": "5097",    "BANKBARODA.NS": "4668", "HUDCO.NS": "20825",
 }
 
 
@@ -841,15 +841,16 @@ def execute_trade(symbol, symbol_token, action, qty, price, sl=0, t1=0, t2=0, mo
     if not clean_sym.endswith("-EQ") and not clean_sym.endswith("-BE"):
         clean_sym = f"{clean_sym}-EQ"
     
-    # Auto-resolve symbol token upfront for both Main Order and SL Order
-    if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
-        symbol_token = STOCK_TOKENS.get(clean_sym) or STOCK_TOKENS.get(clean_sym.replace("-EQ", ""))
-        if not symbol_token:
-            from backend.broker_angelone import get_angelone_token_and_symbol
-            tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
-            if tok:
-                symbol_token = tok
-                clean_sym = t_sym
+    # Authoritative Token Resolution: Always verify against official Angel One Scrip Master
+    from backend.broker_angelone import get_angelone_token_and_symbol
+    scrip_tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
+    if scrip_tok:
+        symbol_token = scrip_tok
+        if t_sym: clean_sym = t_sym
+    elif clean_sym in STOCK_TOKENS:
+        symbol_token = STOCK_TOKENS[clean_sym]
+    elif clean_sym.replace("-EQ", "") in STOCK_TOKENS:
+        symbol_token = STOCK_TOKENS[clean_sym.replace("-EQ", "")]
 
     p = float(price or 0)
     sl_val = float(sl or 0)
@@ -1238,14 +1239,16 @@ def place_order(symbol, symbol_token, action, qty, price=0, exchange="NSE", orde
         clean_sym = f"{clean_sym}-EQ"
     clean_sym = clean_sym.replace(".NS", "-EQ")
 
-    if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
-        symbol_token = STOCK_TOKENS.get(clean_sym) or STOCK_TOKENS.get(clean_sym.replace("-EQ", ""))
-        if not symbol_token:
-            from backend.broker_angelone import get_angelone_token_and_symbol
-            tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
-            if tok:
-                symbol_token = tok
-                clean_sym = t_sym
+    # Authoritative Token Resolution: Always verify against official Angel One Scrip Master
+    from backend.broker_angelone import get_angelone_token_and_symbol
+    scrip_tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
+    if scrip_tok:
+        symbol_token = scrip_tok
+        if t_sym: clean_sym = t_sym
+    elif clean_sym in STOCK_TOKENS:
+        symbol_token = STOCK_TOKENS[clean_sym]
+    elif clean_sym.replace("-EQ", "") in STOCK_TOKENS:
+        symbol_token = STOCK_TOKENS[clean_sym.replace("-EQ", "")]
 
     if not symbol_token:
         return {"success": False, "message": f"❌ Could not find Angel One Symbol Token for '{symbol}'. Please select a stock from the Scanner or enter valid token."}
@@ -1315,14 +1318,16 @@ def place_smartapi_sl_order(symbol: str, symbol_token: str, action: str, qty: in
         clean_sym = f"{clean_sym}-EQ"
     clean_sym = clean_sym.replace(".NS", "-EQ")
 
-    if not symbol_token or str(symbol_token).strip() in ("", "None", "0"):
-        symbol_token = STOCK_TOKENS.get(clean_sym) or STOCK_TOKENS.get(clean_sym.replace("-EQ", ""))
-        if not symbol_token:
-            from backend.broker_angelone import get_angelone_token_and_symbol
-            tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
-            if tok:
-                symbol_token = tok
-                clean_sym = t_sym
+    # Authoritative Token Resolution: Always verify against official Angel One Scrip Master
+    from backend.broker_angelone import get_angelone_token_and_symbol
+    scrip_tok, t_sym = get_angelone_token_and_symbol(clean_sym.replace("-EQ", ""))
+    if scrip_tok:
+        symbol_token = scrip_tok
+        if t_sym: clean_sym = t_sym
+    elif clean_sym in STOCK_TOKENS:
+        symbol_token = STOCK_TOKENS[clean_sym]
+    elif clean_sym.replace("-EQ", "") in STOCK_TOKENS:
+        symbol_token = STOCK_TOKENS[clean_sym.replace("-EQ", "")]
 
     if not symbol_token:
         return {"success": False, "message": f"Could not resolve token for SL order: {symbol}"}
@@ -2202,18 +2207,19 @@ def get_live_token(symbol_base: str) -> str:
 
 
 STOCK_TOKENS = {
-    "IDEA-EQ": "14366", "SUZLON-EQ": "12018", "YESBANK-EQ": "11915", "RPOWER-EQ": "10099",
-    "JPPOWER-EQ": "10098", "IRFC-EQ": "2029", "NHPC-EQ": "17400", "SJVN-EQ": "18883",
-    "IOB-EQ": "1076", "UCOBANK-EQ": "8064", "CENTRALBK-EQ": "5307", "SOUTHBANK-EQ": "3351",
-    "IDFCFIRSTB-EQ": "11184", "PNB-EQ": "10666", "BANKBARODA-EQ": "467", "ZOMATO-EQ": "5097",
-    "TATASTEEL-EQ": "3499", "NBCC-EQ": "14730", "SAIL-EQ": "2963", "HUDCO-EQ": "14732",
+    "IDEA-EQ": "14366", "SUZLON-EQ": "12018", "YESBANK-EQ": "11915", "RPOWER-EQ": "15259",
+    "JPPOWER-EQ": "11763", "IRFC-EQ": "2029", "NHPC-EQ": "17400", "SJVN-EQ": "18883",
+    "IOB-EQ": "9348", "UCOBANK-EQ": "11223", "CENTRALBK-EQ": "14894", "SOUTHBANK-EQ": "5948",
+    "IDFCFIRSTB-EQ": "11184", "PNB-EQ": "10666", "BANKBARODA-EQ": "4668", "ZOMATO-EQ": "5097",
+    "TATASTEEL-EQ": "3499", "NBCC-EQ": "31415", "SAIL-EQ": "2963", "HUDCO-EQ": "20825",
     "RELIANCE-EQ": "2885", "TCS-EQ": "11536", "HDFCBANK-EQ": "1333", "ICICIBANK-EQ": "4963",
     "INFY-EQ": "1594", "SBIN-EQ": "3045", "BHARTIARTL-EQ": "10604", "KOTAKBANK-EQ": "1922",
     "LT-EQ": "11483", "HCLTECH-EQ": "7229", "MARUTI-EQ": "10999", "AXISBANK-EQ": "5900",
     "SUNPHARMA-EQ": "3351", "BAJFINANCE-EQ": "317", "TATAMOTORS-EQ": "3456", "M&M-EQ": "2031",
     "WIPRO-EQ": "3787", "ADANIENT-EQ": "25", "ADANIPORTS-EQ": "15083", "COALINDIA-EQ": "20374",
     "ONGC-EQ": "2475", "NTPC-EQ": "11630", "POWERGRID-EQ": "14977", "TITAN-EQ": "3506",
-    "JSWSTEEL-EQ": "11723", "BEL-EQ": "383"
+    "JSWSTEEL-EQ": "11723", "BEL-EQ": "383", "GMRAIRPORT-EQ": "13528", "HFCL-EQ": "21954",
+    "IDBI-EQ": "1476", "UNIONBANK-EQ": "10753"
 }
 
 WATCHLISTS = {
@@ -2226,11 +2232,12 @@ WATCHLISTS = {
         {"symbol": "SJVN.NS", "name": "SJVN Limited", "base": "SJVN-EQ", "tok": "18883"},
         {"symbol": "IDFCFIRSTB.NS", "name": "IDFC First Bank", "base": "IDFCFIRSTB-EQ", "tok": "11184"},
         {"symbol": "PNB.NS", "name": "Punjab National Bank", "base": "PNB-EQ", "tok": "10666"},
-        {"symbol": "BANKBARODA.NS", "name": "Bank of Baroda", "base": "BANKBARODA-EQ", "tok": "467"},
+        {"symbol": "BANKBARODA.NS", "name": "Bank of Baroda", "base": "BANKBARODA-EQ", "tok": "4668"},
         {"symbol": "ZOMATO.NS", "name": "Zomato Limited", "base": "ZOMATO-EQ", "tok": "5097"},
         {"symbol": "TATASTEEL.NS", "name": "Tata Steel", "base": "TATASTEEL-EQ", "tok": "3499"},
         {"symbol": "SAIL.NS", "name": "Steel Authority of India", "base": "SAIL-EQ", "tok": "2963"},
-        {"symbol": "HUDCO.NS", "name": "HUDCO", "base": "HUDCO-EQ", "tok": "14732"},
+        {"symbol": "HUDCO.NS", "name": "HUDCO", "base": "HUDCO-EQ", "tok": "20825"},
+        {"symbol": "GMRAIRPORT.NS", "name": "GMR Airports", "base": "GMRAIRPORT-EQ", "tok": "13528"},
     ],
     "nifty50": [
         {"symbol": "RELIANCE.NS", "name": "Reliance Industries", "base": "RELIANCE-EQ", "tok": "2885"},
